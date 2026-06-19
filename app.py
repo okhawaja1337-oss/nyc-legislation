@@ -222,6 +222,70 @@ def normalize_event(e):
     }
 
 
+# --- NYC Open Data (311) grounding for bill analysis ---
+COMPLAINT_MAP = [
+    (("noise", "amplified", "quiet"), "Noise"),
+    (("rat", "rodent", "vermin", "pest"), "Rodent"),
+    (("tree", "forestry"), "Damaged Tree"),
+    (("pothole", "roadway", "pavement", "street condition"), "Street Condition"),
+    (("heat", "hot water", "boiler"), "HEAT/HOT WATER"),
+    (("homeless",), "Homeless Person Assistance"),
+    (("tow", "abandoned vehicle", "illegal park", "parking"), "Illegal Parking"),
+    (("garbage", "trash", "litter", "dumping", "sanitation"), "Dirty Condition"),
+    (("flood", "sewer", "storm", "drain", "catch basin"), "Sewer"),
+    (("graffiti",), "Graffiti"),
+    (("idling", "emissions", "air quality"), "Air Quality"),
+    (("sidewalk", "scaffold", "construction"), "Sidewalk Condition"),
+    (("lead", "mold", "asbestos"), "Lead"),
+]
+_BOROUGHS = ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island"]
+
+
+def bill_311_keyword(row):
+    blob = ((row.get("Title") or "") + " " + (row.get("Name") or "")).lower()
+    for terms, ctype in COMPLAINT_MAP:
+        if any(t in blob for t in terms):
+            return ctype
+    return None
+
+
+def nyc_311_context(borough=None, complaint_type=None, days=365, timeout=20):
+    """Live count of 311 complaints from NYC Open Data (dataset erm2-nwe9). Best-effort."""
+    from datetime import timedelta
+    import urllib.request
+    import urllib.parse
+    base = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00")
+    where = [f"created_date >= '{since}'"]
+    if borough:
+        where.append(f"upper(borough)='{borough.upper()}'")
+    if complaint_type:
+        where.append(f"complaint_type='{complaint_type}'")
+    url = base + "?" + urllib.parse.urlencode({"$select": "count(*) AS n", "$where": " AND ".join(where)})
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+        return {"ok": True, "count": (data[0].get("n") if data else None), "url": url}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "url": url}
+
+
+def build_data_context(row):
+    """Assemble a small REAL-DATA block for a bill (currently 311). Returns '' if nothing relevant."""
+    ctype = bill_311_keyword(row)
+    if not ctype:
+        return ""
+    bors = [b for b in _BOROUGHS if b in (row.get("Boroughs named") or "")]
+    bor = bors[0] if len(bors) == 1 else None
+    scope = bor or "citywide"
+    res = nyc_311_context(bor, ctype)
+    if res.get("ok") and res.get("count") is not None:
+        return (f"NYC 311 service requests, last 12 months, {scope}: {res['count']} '{ctype}' complaints. "
+                f"Source: NYC Open Data 311 (dataset erm2-nwe9).")
+    return (f"A NYC 311 lookup for '{ctype}' complaints ({scope}) is relevant here but was not retrieved live; "
+            f"verify at NYC Open Data (dataset erm2-nwe9).")
+
+
 def normalize_matter(m, sponsors=None, histories=None, attachments=None):
     sp = current_sponsors(m, sponsors) if sponsors is not None else None
     prime = next((s["MatterSponsorName"] for s in (sp or []) if s.get("MatterSponsorSequence") == 0), "")
@@ -323,6 +387,39 @@ Legislative data (JSON): {stats}
 Profile:"""
 
 
+ANALYSIS_PROMPT = """You are a nonpartisan legislative policy analyst writing an internal briefing on a NYC Council bill.
+Use the bill information and any REAL DATA CONTEXT provided below.
+
+RULES:
+- Ground every claim in the bill text or the provided data. Do NOT invent statistics, dollar amounts, poll numbers,
+  agency budgets, or quotes. If you lack a figure, say what data would answer it and name the source to check.
+- Be balanced: present support and opposition fairly. Mark predictions clearly as predictions.
+- Neutral, professional tone. Label the brief as AI analysis/inference, not an official statement.
+
+Write these sections, each a bold header followed by tight bullets:
+**What the bill does** — plain-language summary of the mechanism and who it covers.
+**Who would support it** — constituencies/stakeholders likely in favor, and the reasons they'd give.
+**Who would oppose it / concerns** — likely opponents and their strongest objections or trade-offs.
+**Political analysis** — sponsor coalition, partisan/borough dynamics, and what moving it would realistically take.
+**District / borough / citywide outlook** — how effects differ at the district level, the borough level, and citywide.
+**Fiscal analysis** — qualitative cost and revenue drivers; what an OMB/IBO fiscal note would examine; name the
+  specific figures to verify. Do NOT fabricate numbers.
+**Why it exists / who needed it** — the underlying problem; cite the REAL DATA CONTEXT if present, and name the NYC
+  Open Data / agency datasets (311, agency reports, IBO, Open Data portal) that would document the need.
+**If implemented** — likely near-term and longer-term effects, plus risks and what to monitor afterward.
+
+BILL
+File: {file} | Type: {type} | Status: {status} | Committee: {committee}
+Title: {title}
+Sponsors: {sponsors}
+Text (excerpt): {text}
+
+REAL DATA CONTEXT (may be empty):
+{data}
+
+Briefing:"""
+
+
 def text_hash(*parts):
     return hashlib.sha1("||".join(p or "" for p in parts).encode("utf-8", "ignore")).hexdigest()[:16]
 
@@ -360,6 +457,23 @@ class AIImpact:
         r = self.s.post(ANTHROPIC_URL, headers={
             "x-api-key": self.key, "anthropic-version": "2023-06-01",
             "content-type": "application/json"}, json=body, timeout=120)
+        r.raise_for_status()
+        data = r.json()
+        return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
+
+    def analyze(self, row, text, data_ctx=""):
+        if not self.key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        sponsors = ", ".join(s.get("MatterSponsorName", "") for s in (row.get("_sponsor_objs") or [])) or "(not loaded)"
+        prompt = ANALYSIS_PROMPT.format(
+            file=row.get("File", ""), type=row.get("Type", ""), status=row.get("Status", ""),
+            committee=row.get("Committee/Body", ""), title=row.get("Title", ""),
+            sponsors=sponsors, text=(text or row.get("Name", ""))[:7000], data=data_ctx or "(none retrieved)")
+        body = {"model": self.model, "max_tokens": 1400,
+                "messages": [{"role": "user", "content": prompt}]}
+        r = self.s.post(ANTHROPIC_URL, headers={
+            "x-api-key": self.key, "anthropic-version": "2023-06-01",
+            "content-type": "application/json"}, json=body, timeout=150)
         r.raise_for_status()
         data = r.json()
         return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
@@ -606,11 +720,14 @@ def assemble(client, ai, snap, old, profile):
     # Phase B — heavy detail (histories/attachments/text) only on the matters we keep
     if enrich:
         targets = [m for m in raw if not enrich_status or m.get("MatterStatusName") in enrich_status]
+        sponsors_only = profile.get("sponsors_only", False)
 
         def heavy(m):
             mid = m["MatterId"]
             if mid not in sponsors_map:
                 sponsors_map[mid] = client.sponsors(mid)
+            if sponsors_only:
+                return
             histories_map[mid] = client.histories(mid)
             attach_map[mid] = client.attachments(mid)
             if want_text:
@@ -619,7 +736,7 @@ def assemble(client, ai, snap, old, profile):
                     text_map[mid] = tx
 
         if targets:
-            print(f"Pulling full details for {len(targets)} bills...")
+            print(f"Pulling {'sponsors' if sponsors_only else 'full details'} for {len(targets)} bills...")
             _pool(targets, heavy, "details")
 
     rows = []
@@ -794,11 +911,6 @@ def dossier_stats(mb, member):
             "top_coalition": dict(list(coal.items())[:8]),
             "example_prime_bills": prime_titles}
 
-
-
-# ===========================================================================
-# NYC COUNCIL EXPLORER (Streamlit)
-# ===========================================================================
 import streamlit as st
 import pandas as pd
 import datetime as _dt
@@ -806,17 +918,27 @@ import datetime as _dt
 st.set_page_config(page_title="NYC Council Explorer", layout="wide")
 NYC_TOKEN = "Uvxb0j9syjm3aI8h46DhQvnX5skN4aSUL0x_Ee3ty9M.ew0KICAiVmVyc2lvbiI6IDEsDQogICJOYW1lIjogIk5ZQyByZWFkIHRva2VuIDIwMTcxMDI2IiwNCiAgIkRhdGUiOiAiMjAxNy0xMC0yNlQxNjoyNjo1Mi42ODM0MDYtMDU6MDAiLA0KICAiV3JpdGUiOiBmYWxzZQ0KfQ"
 
+def year_window(year):
+    if year == "2024–present":
+        return "2024-01-01", None
+    y = int(year)
+    return f"{y}-01-01", f"{y + 1}-01-01"
+
 st.sidebar.title("⚙️ Load legislation")
-SCOPES = ["All bills (fast list)", "By a Council Member", "One specific bill"]
+YEAR_OPTS = ["2026", "2025", "2024", "2023", "2022", "2024–present"]
+year = st.sidebar.selectbox("Year", YEAR_OPTS, index=0)
+SCOPES = ["All legislation (browse list)", "By a Council Member", "One specific bill"]
 scope = st.sidebar.selectbox("Scope", SCOPES)
+include_sponsors = st.sidebar.checkbox("Include sponsors in the list (slower)", value=False,
+    help="Off = the full list of every bill loads in seconds (open a bill to see its sponsors). "
+         "On = pulls who signed each bill so you can search the list by Council Member.")
 member_name = st.sidebar.text_input("Council Member (for 'By a Council Member')", "Hanks")
 bill_number = st.sidebar.text_input("Bill number (for 'One specific bill')", "Int 0220-2026")
-since_date = st.sidebar.text_input("Introduced on/after (YYYY-MM-DD)", "2024-01-01")
 add_ai = st.sidebar.checkbox("Add AI impact bullets", value=False)
 anthropic_key = st.sidebar.text_input("Anthropic key (optional)", "", type="password")
 load = st.sidebar.button("Load legislation", type="primary")
-st.sidebar.caption("**Fast list** = all bills/types in seconds. **By a Council Member** scans for that member's "
-                   "bills. **Hearings** and **Dossier** tabs load on their own.")
+st.sidebar.caption("Start with **All legislation (browse list)** + **2026** to see every Intro, Reso, and Land Use "
+                   "item this year. **Hearings** and **Dossier** tabs load on their own.")
 
 @st.cache_resource
 def _client():
@@ -857,15 +979,21 @@ def get_directory():
     try: return _client().council_members()
     except Exception: return []
 
+def _tag_rows(rows, text_map=None):
+    for r in rows:
+        t = keyword_tags(r, ((text_map or {}).get(r["MatterId"], "") or "")[:4000])
+        r["Topic tags"] = t["Pillar Tags"]; r["Boroughs named"] = t["Boroughs Named"]; r["Pillar Tags"] = t["Pillar Tags"]
+    return rows
+
 @st.cache_data(ttl=1800, show_spinner=False)
-def build_member_dossier(member, since):
-    profile = {"name": "dossier", "filter": {"since": since, "sponsor": member},
-               "enrich": True, "text": False, "workers": 3, "impact": "keyword"}
+def build_member_dossier(member, year):
+    since, until = year_window(year)
+    flt = {"since": since, "sponsor": member}
+    if until: flt["until"] = until
+    profile = {"name": "dossier", "filter": flt, "enrich": True, "text": False, "workers": 4, "impact": "keyword"}
     snap = Snapshot("/tmp/legistar_state.db"); old = snap.load()
     bundle = assemble(_client(), None, snap, old, profile)
-    for r in bundle["rows"]:
-        t = keyword_tags(r, "")
-        r["Topic tags"] = t["Pillar Tags"]; r["Pillar Tags"] = t["Pillar Tags"]; r["Boroughs named"] = t["Boroughs Named"]
+    _tag_rows(bundle["rows"])
     return {"member": member, "rows": bundle["rows"], "stats": dossier_stats(bundle["rows"], member)}
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -873,12 +1001,21 @@ def make_dossier_ai(member, stats, key):
     return AIImpact("claude-haiku-4-5-20251001", api_key=key).dossier(member, stats)
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def run_pull(scope, bill_number, member_name, since_date, add_ai, anthropic_key):
-    profile = {"name": "web", "filter": {}, "enrich": True, "text": True, "workers": 3}
+def run_pull(scope, year, include_sponsors, bill_number, member_name, add_ai, anthropic_key):
+    since, until = year_window(year)
+    profile = {"name": "web", "filter": {}, "enrich": True, "text": True, "workers": 4}
     if scope == "By a Council Member":
-        profile["filter"] = {"since": since_date, "sponsor": member_name.strip()}; profile["text"] = False
-    elif scope == "All bills (fast list)":
-        profile["filter"] = {"since": since_date}; profile["enrich"] = False; profile["text"] = False
+        flt = {"since": since, "sponsor": member_name.strip()}
+        if until: flt["until"] = until
+        profile["filter"] = flt; profile["text"] = False
+    elif scope == "All legislation (browse list)":
+        flt = {"since": since}
+        if until: flt["until"] = until
+        profile["filter"] = flt; profile["text"] = False
+        if include_sponsors:
+            profile["enrich"] = True; profile["sponsors_only"] = True; profile["workers"] = 6
+        else:
+            profile["enrich"] = False
     else:
         profile["filter"] = {"file": bill_number.strip()}
     profile["impact"] = "ai" if (add_ai and anthropic_key.strip()) else "keyword"
@@ -888,16 +1025,15 @@ def run_pull(scope, bill_number, member_name, since_date, add_ai, anthropic_key)
     snap = Snapshot("/tmp/legistar_state.db"); old = snap.load()
     ai = AIImpact("claude-haiku-4-5-20251001") if profile["impact"] == "ai" else None
     bundle = assemble(client, ai, snap, old, profile)
-    for r in bundle["rows"]:
-        t = keyword_tags(r, (bundle["text_map"].get(r["MatterId"], "") or "")[:4000])
-        r["Topic tags"] = t["Pillar Tags"]; r["Boroughs named"] = t["Boroughs Named"]; r["Pillar Tags"] = t["Pillar Tags"]
+    _tag_rows(bundle["rows"], bundle["text_map"])
     snap.save(bundle["rows"]); build_workbook(bundle, "/tmp/legislation.xlsx")
     return bundle
 
 if load:
     try:
-        with st.spinner("Working... please wait."):
-            st.session_state["bundle"] = run_pull(scope, bill_number, member_name, since_date, add_ai, anthropic_key)
+        with st.spinner("Working... pulling from Legistar. Big years can take a moment."):
+            st.session_state["bundle"] = run_pull(scope, year, include_sponsors, bill_number, member_name, add_ai, anthropic_key)
+            st.session_state["loaded_year"] = year
     except requests.exceptions.HTTPError as e:
         st.error(f"NYC API returned HTTP {getattr(e.response,'status_code','?')}: {(getattr(e.response,'text','') or '')[:400]}")
     except Exception as e:
@@ -906,9 +1042,90 @@ if load:
 st.title("🗽 NYC Council Explorer")
 st.caption("Live legislation, sponsors, committees, hearings, and member dossiers - straight from NYC's Legistar.")
 
-t_hear, t_search, t_detail, t_members, t_dossier, t_compare, t_over, t_changes, t_about = st.tabs(
-    ["📅 Hearings", "🔎 Search bills", "📄 Bill detail", "👤 Members", "📕 Dossier", "⚖️ Compare",
+bundle = st.session_state.get("bundle")
+rows = bundle["rows"] if bundle else []
+loaded_year = st.session_state.get("loaded_year", "")
+if not bundle:
+    st.info("👈 **Pick a Year and Scope in the sidebar, then click _Load legislation_.**  \n"
+            "Start with **All legislation (browse list)** and **2026** to load every Introduction, Resolution, "
+            "and Land Use item for the year — then use the **Legislation list** tab to search by number or word.")
+
+t_list, t_hear, t_detail, t_members, t_dossier, t_compare, t_over, t_changes, t_about = st.tabs(
+    ["📋 Legislation list", "📅 Hearings", "📄 Bill detail", "👤 Members", "📕 Dossier", "⚖️ Compare",
      "📊 Overview", "🔔 What changed", "ℹ️ About"])
+
+def need_data():
+    st.info("Load legislation from the sidebar first (this tab uses that data).")
+
+# ---------------- LEGISLATION LIST (Legistar-style master list + search) ----------------
+with t_list:
+    if not bundle:
+        need_data()
+    else:
+        st.subheader(f"All legislation — {loaded_year}")
+        st.caption("This is the full list (every type). Type a number like **220** to find that bill across all "
+                   "types, or words like **ferry**, a committee, or a member's name. Leave blank to see everything.")
+        q = st.text_input("Search")
+        cc = st.columns(4)
+        types = sorted({r["Type"] for r in rows if r["Type"]})
+        pick_type = cc[0].multiselect("Type (Introduction / Resolution / Land Use…)", types)
+        statuses = sorted({r["Status"] for r in rows if r["Status"]})
+        pick_status = cc[1].multiselect("Status", statuses)
+        topics = sorted({p for r in rows for p in (r.get("Topic tags") or "").split("; ") if p})
+        pick_topic = cc[2].multiselect("Policy topic", topics)
+        pick_bor = cc[3].multiselect("Borough named", ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island"])
+        sponsor_q = st.text_input("Signed on by (member name contains) — needs 'Include sponsors' or a member scope")
+        f = [r for r in rows if matches_search(r, q)]
+        if pick_type:   f = [r for r in f if r["Type"] in pick_type]
+        if pick_status: f = [r for r in f if r["Status"] in pick_status]
+        if pick_topic:  f = [r for r in f if any(p in (r.get("Topic tags") or "") for p in pick_topic)]
+        if pick_bor:    f = [r for r in f if any(b in (r.get("Boroughs named") or "") for b in pick_bor)]
+        if sponsor_q.strip():
+            sq = sponsor_q.strip().lower()
+            f = [r for r in f if any(sq in (n or "").lower() for n in r.get("_sponsor_names", []))
+                 or sq in (r.get("Prime Sponsor", "") or "").lower()]
+        st.caption(f"Showing {len(f)} of {len(rows)} bills")
+        has_sp = any(r.get("_sponsor_names") for r in f)
+        disp = []
+        for r in f:
+            d = {k: v for k, v in r.items() if not k.startswith("_") and k != "Pillar Tags"}
+            if has_sp: d["All sponsors"] = "; ".join(r.get("_sponsor_names", []))
+            disp.append(d)
+        if disp:
+            st.dataframe(pd.DataFrame(disp), use_container_width=True, height=520,
+                column_config={"Web Link": st.column_config.LinkColumn("Legistar", display_text="Open")})
+
+        with st.expander("🔬 Generate full analysis for these bills → Excel (uses your key, capped)"):
+            st.caption("Runs the deep analysis on the filtered bills above and returns an Excel. Capped to keep "
+                       "time and cost sane — filter the list first, then analyze.")
+            ncap = st.number_input("How many of the filtered bills (max 15)", 1, 15, 5)
+            if st.button("Generate analyses", key="batch_an"):
+                if not anthropic_key.strip():
+                    st.warning("Add your Anthropic key in the sidebar.")
+                else:
+                    sub = f[:int(ncap)]
+                    ai_an = AIImpact("claude-haiku-4-5-20251001", api_key=anthropic_key.strip())
+                    out = []; prog = st.progress(0.0)
+                    for i, rr in enumerate(sub):
+                        try:
+                            det = fetch_detail(rr["MatterId"])
+                            rr2 = dict(rr); rr2["_sponsor_objs"] = current_sponsors({"MatterVersion": None}, det.get("sponsors", []))
+                            anx = ai_an.analyze(rr2, det.get("text", ""), build_data_context(rr))
+                        except Exception as e:
+                            anx = f"(failed: {e})"
+                        out.append({"File": rr["File"], "Title": rr["Title"], "Analysis": anx})
+                        prog.progress((i + 1) / len(sub))
+                    from openpyxl import Workbook
+                    wb = Workbook(); ws = wb.active; ws.title = "Analysis"
+                    ws.append(["File", "Title", "Analysis"])
+                    for o in out:
+                        ws.append([o["File"], o["Title"], o["Analysis"]])
+                    wb.save("/tmp/analysis.xlsx"); st.session_state["analysis_xlsx"] = True
+                    st.success(f"Analyzed {len(out)} bills.")
+            if st.session_state.get("analysis_xlsx"):
+                with open("/tmp/analysis.xlsx", "rb") as fh:
+                    st.download_button("⬇️ Download analyses (Excel)", fh.read(), "bill_analyses.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ---------------- HEARINGS ----------------
 with t_hear:
@@ -949,48 +1166,6 @@ with t_hear:
                 st.dataframe(pd.DataFrame(ag), hide_index=True, use_container_width=True)
             else:
                 st.caption("No agenda items posted yet for this hearing.")
-
-bundle = st.session_state.get("bundle")
-rows = bundle["rows"] if bundle else []
-
-def need_data():
-    st.info("Load legislation from the sidebar first (this tab uses that data).")
-
-# ---------------- SEARCH ----------------
-with t_search:
-    if not bundle:
-        need_data()
-    else:
-        st.caption("Type a number like **220** to find that bill across all types, or words like **ferry**, a committee, or a member's name.")
-        q = st.text_input("Search")
-        cc = st.columns(4)
-        types = sorted({r["Type"] for r in rows if r["Type"]})
-        pick_type = cc[0].multiselect("Type (Introduction / Resolution / Land Use…)", types)
-        statuses = sorted({r["Status"] for r in rows if r["Status"]})
-        pick_status = cc[1].multiselect("Status", statuses)
-        topics = sorted({p for r in rows for p in (r.get("Topic tags") or "").split("; ") if p})
-        pick_topic = cc[2].multiselect("Policy topic", topics)
-        pick_bor = cc[3].multiselect("Borough named", ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island"])
-        sponsor_q = st.text_input("Signed on by (member name contains)")
-        f = [r for r in rows if matches_search(r, q)]
-        if pick_type:   f = [r for r in f if r["Type"] in pick_type]
-        if pick_status: f = [r for r in f if r["Status"] in pick_status]
-        if pick_topic:  f = [r for r in f if any(p in (r.get("Topic tags") or "") for p in pick_topic)]
-        if pick_bor:    f = [r for r in f if any(b in (r.get("Boroughs named") or "") for b in pick_bor)]
-        if sponsor_q.strip():
-            sq = sponsor_q.strip().lower()
-            f = [r for r in f if any(sq in (n or "").lower() for n in r.get("_sponsor_names", []))
-                 or sq in (r.get("Prime Sponsor", "") or "").lower()]
-        st.caption(f"Showing {len(f)} of {len(rows)} bills")
-        has_sp = any(r.get("_sponsor_names") for r in f)
-        disp = []
-        for r in f:
-            d = {k: v for k, v in r.items() if not k.startswith("_") and k != "Pillar Tags"}
-            if has_sp: d["All sponsors"] = "; ".join(r.get("_sponsor_names", []))
-            disp.append(d)
-        if disp:
-            st.dataframe(pd.DataFrame(disp), use_container_width=True, height=460,
-                column_config={"Web Link": st.column_config.LinkColumn("Legistar", display_text="Open")})
 
 # ---------------- BILL DETAIL ----------------
 with t_detail:
@@ -1040,12 +1215,32 @@ with t_detail:
             with st.expander("Full bill text"):
                 st.text(tx)
 
+        st.divider()
+        if st.button("🔬 Generate full analysis (uses your Anthropic key)", key="an_btn"):
+            if not anthropic_key.strip():
+                st.warning("Add your Anthropic key in the sidebar first.")
+            else:
+                with st.spinner("Pulling any open data and writing the analysis..."):
+                    try:
+                        r_an = dict(r); r_an["_sponsor_objs"] = sp
+                        an = AIImpact("claude-haiku-4-5-20251001", api_key=anthropic_key.strip()).analyze(r_an, tx, build_data_context(r))
+                        st.session_state.setdefault("analyses", {})[mid] = an
+                    except Exception as e:
+                        st.error(f"{type(e).__name__}: {e}")
+        _an = st.session_state.get("analyses", {}).get(mid)
+        if _an:
+            st.markdown("### 🔬 Full policy analysis")
+            st.caption("AI-generated, grounded in the bill text and any retrieved NYC Open Data. Inference, not "
+                       "official — verify all figures with OMB / IBO / agency sources.")
+            st.markdown(_an)
+
 # ---------------- MEMBERS ----------------
 with t_members:
     if not bundle:
         need_data()
     elif not any(r.get("_sponsor_names") for r in rows):
-        st.info("Sponsor data isn't loaded. Use the **By a Council Member** scope in the sidebar.")
+        st.info("Sponsor data isn't loaded. Turn on **Include sponsors** in the sidebar, or use the "
+                "**By a Council Member** scope, then reload.")
     else:
         mem = st.text_input("Council Member name (e.g., Hanks, Carr, Morano, Salaam)")
         if mem.strip():
@@ -1067,7 +1262,8 @@ with t_members:
 # ---------------- DOSSIER ----------------
 with t_dossier:
     st.subheader("📕 Council Member dossier")
-    st.caption("A profile of any member's legislative record, with optional AI analysis. Loads on its own (doesn't need the sidebar pull).")
+    st.caption("A profile of any member's record for the selected **Year** (sidebar), with optional AI analysis. "
+               "Loads on its own.")
     members = get_directory()
     if not members:
         manual = st.text_input("Directory unavailable — type a member's last name", "Hanks")
@@ -1075,11 +1271,10 @@ with t_dossier:
     who = st.selectbox("Council Member", members) if members else None
     run_ai = st.checkbox("Include AI analysis (uses the Anthropic key in the sidebar)", value=bool(anthropic_key.strip()))
     if who and st.button("Build dossier", type="primary"):
-        with st.spinner(f"Scanning {who}'s record — this scans the session (a few minutes; cached after)..."):
+        with st.spinner(f"Scanning {who}'s {year} record (a few minutes; cached after)..."):
             try:
-                dd = build_member_dossier(who, since_date)
-                st.session_state["dossier"] = dd
-                st.session_state["dossier_ai"] = ""
+                dd = build_member_dossier(who, year)
+                st.session_state["dossier"] = dd; st.session_state["dossier_ai"] = ""
                 if run_ai and anthropic_key.strip():
                     with st.spinner("Writing AI analysis..."):
                         st.session_state["dossier_ai"] = make_dossier_ai(who, dd["stats"], anthropic_key.strip())
@@ -1115,7 +1310,7 @@ with t_dossier:
 # ---------------- COMPARE ----------------
 with t_compare:
     if not bundle or not any(r.get("_sponsor_names") for r in rows):
-        st.info("Load a scope with sponsor data (By a Council Member, or open bills) to compare members.")
+        st.info("Turn on **Include sponsors** (or use a member scope) so two members can be compared.")
     else:
         c = st.columns(2)
         a = c[0].text_input("Member A", "Hanks"); b = c[1].text_input("Member B", "Carr")
@@ -1127,7 +1322,6 @@ with t_compare:
                 "Passed": [overview_general(ma)["passed"], overview_general(mb)["passed"]],
                 "Dead/filed": [overview_general(ma)["dead"], overview_general(mb)["dead"]]})
             st.dataframe(comp, hide_index=True, use_container_width=True)
-            st.caption("Both members must appear in the loaded data. For a full compare, load a broad set.")
 
 # ---------------- OVERVIEW ----------------
 with t_over:
@@ -1171,13 +1365,13 @@ with t_about:
     st.subheader("About this tool")
     st.markdown("""
 **NYC Council Explorer** pulls live data from the NYC Council's official Legistar system:
+- **Legislation list** — every bill for the chosen **year**, all types, searchable by number or word (Legistar-style).
 - **Hearings** — committee meeting schedule, locations, agendas, and outcomes.
-- **Bills** — every type, with sponsors, committee, status, history, attachments, and full text.
-- **Members & Dossiers** — any member's record, what they lead vs. co-sponsor, coalition, and an AI profile.
+- **Bill detail** — sponsors, committee, status, history, attachments, full text.
+- **Members & Dossiers** — any member's record by year, lead vs. co-sponsor, coalition, and an AI profile.
 
-**Policy topics** are auto-tagged from each bill's text (Arts & Culture, Neighborhood Development, Economic
-Development, Public Safety/Crisis, Health & Hospitals); bills are also flagged by the **boroughs** they name.
+**Policy topics** are auto-tagged from each bill's text; bills are also flagged by the **boroughs** they name.
 
-**About the AI dossier:** it analyzes only a member's public sponsorship record (not floor votes), is generated by
-AI, and is labeled as inference — not an official statement. Keyword lists live at the top of the code and can be expanded.
+**About the AI dossier:** it analyzes only a member's public sponsorship record (not floor votes), is AI-generated,
+and is labeled as inference — not an official statement.
 """)

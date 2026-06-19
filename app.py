@@ -297,9 +297,9 @@ def normalize_matter(m, sponsors=None, histories=None, attachments=None):
         dated = [h for h in histories if h.get("MatterHistoryActionDate")]
         latest = max(dated, key=lambda h: h["MatterHistoryActionDate"], default=None)
     return {
-        "File": m.get("MatterFile", ""), "Type": m.get("MatterTypeName", ""),
-        "Name": m.get("MatterName", ""), "Title": m.get("MatterTitle", ""),
-        "Status": m.get("MatterStatusName", ""), "Committee/Body": m.get("MatterBodyName", ""),
+        "File": m.get("MatterFile") or "", "Type": m.get("MatterTypeName") or "",
+        "Name": m.get("MatterName") or "", "Title": m.get("MatterTitle") or "",
+        "Status": m.get("MatterStatusName") or "", "Committee/Body": m.get("MatterBodyName") or "",
         "Intro Date": _date(m.get("MatterIntroDate")), "Agenda Date": _date(m.get("MatterAgendaDate")),
         "Passed Date": _date(m.get("MatterPassedDate")), "Enacted Date": _date(m.get("MatterEnactmentDate")),
         "Law #": m.get("MatterEnactmentNumber", ""),
@@ -435,7 +435,7 @@ class AIImpact:
         if not self.key:
             raise RuntimeError("ANTHROPIC_API_KEY not set")
         prompt = PROMPT.format(file=row.get("File", ""), type=row.get("Type", ""),
-                               title=row.get("Title", ""), text=(text or row.get("Name", ""))[:6000])
+                               title=row.get("Title", ""), text=((text or row.get("Name") or ""))[:6000])
         body = {"model": self.model, "max_tokens": 320,
                 "messages": [{"role": "user", "content": prompt}]}
         r = self.s.post(ANTHROPIC_URL, headers={
@@ -468,7 +468,7 @@ class AIImpact:
         prompt = ANALYSIS_PROMPT.format(
             file=row.get("File", ""), type=row.get("Type", ""), status=row.get("Status", ""),
             committee=row.get("Committee/Body", ""), title=row.get("Title", ""),
-            sponsors=sponsors, text=(text or row.get("Name", ""))[:7000], data=data_ctx or "(none retrieved)")
+            sponsors=sponsors, text=((text or row.get("Name") or ""))[:7000], data=data_ctx or "(none retrieved)")
         body = {"model": self.model, "max_tokens": 1400,
                 "messages": [{"role": "user", "content": prompt}]}
         r = self.s.post(ANTHROPIC_URL, headers={

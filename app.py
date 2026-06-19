@@ -915,7 +915,7 @@ import streamlit as st
 import pandas as pd
 import datetime as _dt
 
-st.set_page_config(page_title="NYC Council Explorer", layout="wide")
+st.set_page_config(page_title="NYC Council Explorer", layout="wide", initial_sidebar_state="collapsed")
 NYC_TOKEN = "Uvxb0j9syjm3aI8h46DhQvnX5skN4aSUL0x_Ee3ty9M.ew0KICAiVmVyc2lvbiI6IDEsDQogICJOYW1lIjogIk5ZQyByZWFkIHRva2VuIDIwMTcxMDI2IiwNCiAgIkRhdGUiOiAiMjAxNy0xMC0yNlQxNjoyNjo1Mi42ODM0MDYtMDU6MDAiLA0KICAiV3JpdGUiOiBmYWxzZQ0KfQ"
 
 def year_window(year):
@@ -924,21 +924,54 @@ def year_window(year):
     y = int(year)
     return f"{y}-01-01", f"{y + 1}-01-01"
 
-st.sidebar.title("⚙️ Load legislation")
+st.markdown("""
+<style>
+:root { --navy:#0b2545; --blue:#2563eb; --ink:#0b1f3a; --line:#e6e8ee; --bg:#f4f6fb; --teal:#0f766e; }
+[data-testid="stSidebar"] { display:none !important; }
+[data-testid="stSidebarCollapsedControl"] { display:none !important; }
+.stApp { background: var(--bg); }
+.block-container { padding-top: 1.0rem; max-width: 1420px; }
+.appbar { background: linear-gradient(110deg,#0b2545 0%,#13315c 52%,#1d4ed8 145%);
+  color:#fff; border-radius:16px; padding:18px 22px; margin-bottom:14px;
+  box-shadow:0 8px 26px rgba(13,37,90,.20); position:relative; overflow:hidden; }
+.appbar:after { content:""; position:absolute; right:-40px; top:-60px; width:220px; height:220px;
+  background:radial-gradient(circle, rgba(255,255,255,.10) 0%, rgba(255,255,255,0) 70%); }
+.appbar-title { font-size:1.55rem; font-weight:800; letter-spacing:.2px; }
+.appbar-sub { opacity:.92; font-size:.9rem; margin-top:3px; }
+.livepill { position:absolute; top:18px; right:22px; background:rgba(255,255,255,.16);
+  color:#bbf7d0; font-weight:700; font-size:.7rem; padding:4px 11px; border-radius:999px; letter-spacing:.6px; }
+div[data-testid="stMetric"] { background:#fff; border:1px solid var(--line); border-radius:14px;
+  padding:14px 16px; box-shadow:0 1px 3px rgba(16,24,40,.05); }
+div[data-testid="stMetricValue"] { color:var(--navy); font-weight:800; }
+div[data-testid="stMetricLabel"] { color:#5b6b86; font-weight:600; }
+.stTabs [data-baseweb="tab-list"] { gap:6px; flex-wrap:wrap; border-bottom:2px solid var(--line); }
+.stTabs [data-baseweb="tab"] { background:#fff; border:1px solid var(--line); border-bottom:none;
+  border-radius:11px 11px 0 0; padding:7px 14px; font-weight:600; color:#33415c; }
+.stTabs [aria-selected="true"] { background:var(--navy) !important; color:#fff !important; border-color:var(--navy); }
+.stButton>button { background:var(--blue); color:#fff; border:none; border-radius:10px; font-weight:700; padding:.5rem 1.1rem; }
+.stButton>button:hover { background:#1e40af; color:#fff; }
+.stDownloadButton>button { background:var(--teal); color:#fff; border:none; border-radius:10px; font-weight:700; }
+.stDownloadButton>button:hover { background:#115e59; color:#fff; }
+[data-testid="stExpander"] { border:1px solid var(--line); border-radius:14px; background:#fff;
+  box-shadow:0 1px 3px rgba(16,24,40,.04); }
+[data-testid="stExpander"] summary { font-weight:700; color:var(--navy); }
+[data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:12px; }
+a { color:var(--blue) !important; }
+h1,h2,h3 { color:var(--ink); }
+div[data-testid="stAlert"] { border-radius:12px; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="appbar">
+  <div class="appbar-title">🗽 NYC Council Explorer</div>
+  <div class="appbar-sub">Legislation · Sponsors · Committees · Hearings · Member dossiers — live from NYC Legistar</div>
+  <span class="livepill">● LIVE</span>
+</div>
+""", unsafe_allow_html=True)
+
 YEAR_OPTS = ["2026", "2025", "2024", "2023", "2022", "2024–present"]
-year = st.sidebar.selectbox("Year", YEAR_OPTS, index=0)
 SCOPES = ["All legislation (browse list)", "By a Council Member", "One specific bill"]
-scope = st.sidebar.selectbox("Scope", SCOPES)
-include_sponsors = st.sidebar.checkbox("Include sponsors in the list (slower)", value=False,
-    help="Off = the full list of every bill loads in seconds (open a bill to see its sponsors). "
-         "On = pulls who signed each bill so you can search the list by Council Member.")
-member_name = st.sidebar.text_input("Council Member (for 'By a Council Member')", "Hanks")
-bill_number = st.sidebar.text_input("Bill number (for 'One specific bill')", "Int 0220-2026")
-add_ai = st.sidebar.checkbox("Add AI impact bullets", value=False)
-anthropic_key = st.sidebar.text_input("Anthropic key (optional)", "", type="password")
-load = st.sidebar.button("Load legislation", type="primary")
-st.sidebar.caption("Start with **All legislation (browse list)** + **2026** to see every Intro, Reso, and Land Use "
-                   "item this year. **Hearings** and **Dossier** tabs load on their own.")
 
 @st.cache_resource
 def _client():
@@ -978,6 +1011,36 @@ def fetch_agenda(event_id):
 def get_directory():
     try: return _client().council_members()
     except Exception: return []
+
+# --- top control panel (replaces the old sidebar) ---
+_dir = get_directory()
+_pre_bundle = st.session_state.get("bundle")
+with st.expander("⚙️  Data controls — choose what to load, then press Load", expanded=(_pre_bundle is None)):
+    a1, a2, a3 = st.columns([1, 1.5, 1.1])
+    year = a1.selectbox("Year", YEAR_OPTS, index=0)
+    scope = a2.selectbox("Scope", SCOPES)
+    include_sponsors = a3.checkbox("Include sponsors (slower)", value=False,
+        help="On = pull who signed each bill so the list is searchable by member. Off loads much faster.")
+    if scope == "By a Council Member":
+        member_name = st.selectbox("Council Member", _dir) if _dir else st.text_input("Council Member", "Hanks")
+    else:
+        member_name = ""
+    if scope == "One specific bill":
+        _loaded_files = sorted({r["File"] for r in (_pre_bundle or {}).get("rows", []) if r.get("File")})
+        if _loaded_files:
+            bill_number = st.selectbox("Pick a bill", _loaded_files)
+        else:
+            bill_number = st.text_input("Bill number", "Int 0220-2026")
+            st.caption("Tip: load **All legislation** once — then this becomes a dropdown of every bill.")
+    else:
+        bill_number = ""
+    b1, b2, b3 = st.columns([1.3, 1.3, 1])
+    add_ai = b1.checkbox("Add AI impact bullets", value=False)
+    anthropic_key = b2.text_input("Anthropic key (optional)", "", type="password")
+    b3.write(""); b3.write("")
+    load = b3.button("⟳  Load data", type="primary")
+    st.caption("First load of a full year reads live from NYC's servers (seconds–minutes); cached and instant after. "
+               "Single-bill and member scopes are fastest.")
 
 def _tag_rows(rows, text_map=None):
     for r in rows:
@@ -1039,23 +1102,20 @@ if load:
     except Exception as e:
         st.error(f"{type(e).__name__}: {e}")
 
-st.title("🗽 NYC Council Explorer")
-st.caption("Live legislation, sponsors, committees, hearings, and member dossiers - straight from NYC's Legistar.")
-
 bundle = st.session_state.get("bundle")
 rows = bundle["rows"] if bundle else []
 loaded_year = st.session_state.get("loaded_year", "")
 if not bundle:
-    st.info("👈 **Pick a Year and Scope in the sidebar, then click _Load legislation_.**  \n"
-            "Start with **All legislation (browse list)** and **2026** to load every Introduction, Resolution, "
-            "and Land Use item for the year — then use the **Legislation list** tab to search by number or word.")
+    st.info("**Open the ⚙️ Data controls panel above, pick a Year and Scope, then press _Load data_.**  \n"
+            "Start with **All legislation** + **2026** to load every Introduction, Resolution, and Land Use item "
+            "for the year — then use the **Legislation list** tab to search by number or word.")
 
 t_list, t_hear, t_detail, t_members, t_dossier, t_compare, t_over, t_changes, t_about = st.tabs(
     ["📋 Legislation list", "📅 Hearings", "📄 Bill detail", "👤 Members", "📕 Dossier", "⚖️ Compare",
      "📊 Overview", "🔔 What changed", "ℹ️ About"])
 
 def need_data():
-    st.info("Load legislation from the sidebar first (this tab uses that data).")
+    st.info("Load data from the ⚙️ controls panel above first (this tab uses that data).")
 
 # ---------------- LEGISLATION LIST (Legistar-style master list + search) ----------------
 with t_list:
@@ -1101,7 +1161,7 @@ with t_list:
             ncap = st.number_input("How many of the filtered bills (max 15)", 1, 15, 5)
             if st.button("Generate analyses", key="batch_an"):
                 if not anthropic_key.strip():
-                    st.warning("Add your Anthropic key in the sidebar.")
+                    st.warning("Add your Anthropic key in the ⚙️ controls panel above.")
                 else:
                     sub = f[:int(ncap)]
                     ai_an = AIImpact("claude-haiku-4-5-20251001", api_key=anthropic_key.strip())
@@ -1218,7 +1278,7 @@ with t_detail:
         st.divider()
         if st.button("🔬 Generate full analysis (uses your Anthropic key)", key="an_btn"):
             if not anthropic_key.strip():
-                st.warning("Add your Anthropic key in the sidebar first.")
+                st.warning("Add your Anthropic key in the ⚙️ controls panel above first.")
             else:
                 with st.spinner("Pulling any open data and writing the analysis..."):
                     try:
@@ -1239,7 +1299,7 @@ with t_members:
     if not bundle:
         need_data()
     elif not any(r.get("_sponsor_names") for r in rows):
-        st.info("Sponsor data isn't loaded. Turn on **Include sponsors** in the sidebar, or use the "
+        st.info("Sponsor data isn't loaded. Turn on **Include sponsors** in the ⚙️ controls panel, or use the "
                 "**By a Council Member** scope, then reload.")
     else:
         mem = st.text_input("Council Member name (e.g., Hanks, Carr, Morano, Salaam)")
@@ -1262,14 +1322,14 @@ with t_members:
 # ---------------- DOSSIER ----------------
 with t_dossier:
     st.subheader("📕 Council Member dossier")
-    st.caption("A profile of any member's record for the selected **Year** (sidebar), with optional AI analysis. "
+    st.caption("A profile of any member's record for the selected **Year** (controls panel), with optional AI analysis. "
                "Loads on its own.")
     members = get_directory()
     if not members:
         manual = st.text_input("Directory unavailable — type a member's last name", "Hanks")
         members = [manual.strip()] if manual.strip() else []
     who = st.selectbox("Council Member", members) if members else None
-    run_ai = st.checkbox("Include AI analysis (uses the Anthropic key in the sidebar)", value=bool(anthropic_key.strip()))
+    run_ai = st.checkbox("Include AI analysis (uses the Anthropic key in the controls panel)", value=bool(anthropic_key.strip()))
     if who and st.button("Build dossier", type="primary"):
         with st.spinner(f"Scanning {who}'s {year} record (a few minutes; cached after)..."):
             try:
@@ -1299,7 +1359,7 @@ with t_dossier:
                        "reflects sponsorship activity (not floor votes) and may be incomplete.")
             st.write(ai_txt)
         elif run_ai and not anthropic_key.strip():
-            st.info("Add your Anthropic key in the sidebar to include the AI write-up.")
+            st.info("Add your Anthropic key in the ⚙️ controls panel to include the AI write-up.")
         st.markdown("### Prime-sponsored bills")
         pm = [r for r in mb if member.lower() in (r.get("Prime Sponsor", "") or "").lower()]
         df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_") and k != "Pillar Tags"} for r in pm])

@@ -309,10 +309,12 @@ def normalize_matter(m, sponsors=None, histories=None, attachments=None):
         "Latest Action": (latest or {}).get("MatterHistoryActionName", ""),
         "Latest Action Date": _date((latest or {}).get("MatterHistoryActionDate")),
         "Attachments (#)": len(attachments) if attachments is not None else "",
-        "Last Modified (UTC)": m.get("MatterLastModifiedUtc", ""),
+        "Last Modified (UTC)": m.get("MatterLastModifiedUtc") or "",
+        "Version": m.get("MatterVersion") or "*",
         "MatterId": m.get("MatterId", ""), "Web Link": web_url(m),
         "_sponsor_names": names, "_prime": prime,
         "_sponsor_objs": sp or [], "_status_raw": m.get("MatterStatusName", ""),
+        "_intro_raw": m.get("MatterIntroDate") or "",
     }
 
 
@@ -396,17 +398,19 @@ RULES:
 - Be balanced: present support and opposition fairly. Mark predictions clearly as predictions.
 - Neutral, professional tone. Label the brief as AI analysis/inference, not an official statement.
 
-Write these sections, each a bold header followed by tight bullets:
-**What the bill does** — plain-language summary of the mechanism and who it covers.
-**Who would support it** — constituencies/stakeholders likely in favor, and the reasons they'd give.
-**Who would oppose it / concerns** — likely opponents and their strongest objections or trade-offs.
-**Political analysis** — sponsor coalition, partisan/borough dynamics, and what moving it would realistically take.
-**District / borough / citywide outlook** — how effects differ at the district level, the borough level, and citywide.
-**Fiscal analysis** — qualitative cost and revenue drivers; what an OMB/IBO fiscal note would examine; name the
+Write these sections, each a bold header followed by 2–4 substantive bullets (be specific, not generic):
+**What the bill does** — the mechanism in plain language, what legally changes, who it covers, and effective date/triggers if stated.
+**Who would support it** — specific constituencies, agencies, advocacy groups, and the concrete reasons they'd back it.
+**Who would oppose it / concerns** — likely opponents, their strongest objections, trade-offs, and implementation friction.
+**Political analysis** — sponsor coalition, partisan and borough dynamics, committee path, and what moving it realistically takes (votes, Speaker, mayoral posture).
+**District / borough / citywide outlook** — how effects differ at the district, borough, and citywide levels, and which areas are most affected.
+**Fiscal analysis** — qualitative cost and revenue drivers, who bears the cost, enforcement burden, and what an OMB/IBO fiscal note would examine; name the
   specific figures to verify. Do NOT fabricate numbers.
-**Why it exists / who needed it** — the underlying problem; cite the REAL DATA CONTEXT if present, and name the NYC
-  Open Data / agency datasets (311, agency reports, IBO, Open Data portal) that would document the need.
-**If implemented** — likely near-term and longer-term effects, plus risks and what to monitor afterward.
+**Why it exists / who needed it** — the underlying problem and its scale; cite the REAL DATA CONTEXT if present, and name the NYC
+  Open Data / agency datasets (311, HPD, DOB, DOT, NYPD, DOHMH, IBO) that would document the need.
+**Comparable measures** — similar laws/proposals in NYC's past or other cities, and how they fared (reason from general knowledge; mark as illustrative).
+**If implemented** — near-term and longer-term effects, second-order consequences, risks, and concrete metrics to monitor afterward.
+**Open questions** — the 2–3 sharpest questions a staffer should resolve before the sponsor commits.
 
 BILL
 File: {file} | Type: {type} | Status: {status} | Committee: {committee}
@@ -469,7 +473,7 @@ class AIImpact:
             file=row.get("File", ""), type=row.get("Type", ""), status=row.get("Status", ""),
             committee=row.get("Committee/Body", ""), title=row.get("Title", ""),
             sponsors=sponsors, text=((text or row.get("Name") or ""))[:7000], data=data_ctx or "(none retrieved)")
-        body = {"model": self.model, "max_tokens": 1400,
+        body = {"model": self.model, "max_tokens": 1900,
                 "messages": [{"role": "user", "content": prompt}]}
         r = self.s.post(ANTHROPIC_URL, headers={
             "x-api-key": self.key, "anthropic-version": "2023-06-01",
@@ -496,7 +500,7 @@ def fingerprint(row):
     return {"File": row["File"], "Status": row["Status"], "SponsorCount": row["Sponsors (#)"],
             "Sponsors": sorted(row.get("_sponsor_names", [])), "Prime": row.get("_prime", ""),
             "Attachments": row["Attachments (#)"], "LatestAction": row["Latest Action"],
-            "LastModified": row["Last Modified (UTC)"]}
+            "LastModified": row["Last Modified (UTC)"], "Version": row.get("Version", "")}
 
 
 class Snapshot:
@@ -532,23 +536,26 @@ def diff(old, rows):
     changes = []
     for r in rows:
         mid, new = r["MatterId"], fingerprint(r)
+        when = (r.get("Last Modified (UTC)") or "")[:16].replace("T", " ")
         prev = old.get(mid)
         if prev is None:
-            changes.append((r["File"], "NEW", "—", "—", f"{r['Type']}: {r['Title'][:80]}")); continue
+            changes.append((r["File"], "NEW", "—", "—", f"{r['Type']}: {(r['Title'] or '')[:80]}", when)); continue
         if prev["Status"] != new["Status"]:
-            changes.append((r["File"], "STATUS", "Status", prev["Status"], new["Status"]))
+            changes.append((r["File"], "STATUS", "Status", prev["Status"], new["Status"], when))
+        if prev.get("Version") != new.get("Version"):
+            changes.append((r["File"], "AMENDED (text)", "Version", prev.get("Version", ""), new.get("Version", ""), when))
         added = set(new["Sponsors"]) - set(prev["Sponsors"])
         dropped = set(prev["Sponsors"]) - set(new["Sponsors"])
         if added:
-            changes.append((r["File"], "SPONSOR +", "Sponsors", f'{prev["SponsorCount"]} sponsors', "; ".join(sorted(added))))
+            changes.append((r["File"], "SIGNED ON +", "Sponsors", f'{prev["SponsorCount"]} sponsors', "; ".join(sorted(added)), when))
         if dropped:
-            changes.append((r["File"], "SPONSOR -", "Sponsors", "; ".join(sorted(dropped)), f'now {new["SponsorCount"]}'))
+            changes.append((r["File"], "REMOVED -", "Sponsors", "; ".join(sorted(dropped)), f'now {new["SponsorCount"]}', when))
         if prev["Prime"] != new["Prime"]:
-            changes.append((r["File"], "PRIME", "Prime Sponsor", prev["Prime"], new["Prime"]))
+            changes.append((r["File"], "PRIME", "Prime Sponsor", prev["Prime"], new["Prime"], when))
         if prev["LatestAction"] != new["LatestAction"]:
-            changes.append((r["File"], "ACTION", "Latest Action", prev["LatestAction"], new["LatestAction"]))
+            changes.append((r["File"], "ACTION", "Latest Action", prev["LatestAction"], new["LatestAction"], when))
         if prev["Attachments"] != new["Attachments"]:
-            changes.append((r["File"], "ATTACH", "Attachments (#)", prev["Attachments"], new["Attachments"]))
+            changes.append((r["File"], "ATTACH", "Attachments (#)", prev["Attachments"], new["Attachments"], when))
     return changes
 
 
@@ -659,12 +666,12 @@ def build_workbook(bundle, path):
         _sheet(wb, "Bill Text", ["File", "Title", "Plain Text (truncated 30k)"], t_rows,
                widths=[16, 50, 120])
 
-    hdr = ["File", "Change", "Field", "Was", "Now"]
+    hdr = ["File", "Change", "Field", "Was", "Now", "When (last modified UTC)"]
     if changes:
-        _sheet(wb, "Changes Since Last Sync", hdr, changes, widths=[16, 12, 16, 40, 40], fill=CHANGE_FILL)
+        _sheet(wb, "Changes Since Last Sync", hdr, changes, widths=[16, 14, 16, 36, 36, 20], fill=CHANGE_FILL)
     else:
         msg = run_info.get("Changes placeholder", "(no changes since last sync)")
-        _sheet(wb, "Changes Since Last Sync", hdr, [[msg, "", "", "", ""]], widths=[16, 12, 16, 40, 40])
+        _sheet(wb, "Changes Since Last Sync", hdr, [[msg, "", "", "", "", ""]], widths=[16, 14, 16, 36, 36, 20])
 
     _sheet(wb, "Run Info", ["Field", "Value"], [[k, v] for k, v in run_info.items()], widths=[26, 80])
     wb.move_sheet("Matters", -(len(wb.sheetnames) - 1))
@@ -709,13 +716,22 @@ def assemble(client, ai, snap, old, profile):
                     print(f"   {label}: {done}/{total}")
 
     # Phase A — sponsor scan (cheap: 1 call/matter) only when filtering by sponsor
+    scan_failures = [0]
     if sponsor_filter:
         print(f"Scanning {len(raw)} bills for sponsor '{f['sponsor']}' — this is the slow part, please wait...")
-        _pool(raw, lambda m: sponsors_map.__setitem__(m["MatterId"], client.sponsors(m["MatterId"])), "scanned")
+
+        def _scan(m):
+            try:
+                sponsors_map[m["MatterId"]] = client.sponsors(m["MatterId"]) or []
+            except Exception:
+                sponsors_map[m["MatterId"]] = []
+                scan_failures[0] += 1
+        _pool(raw, _scan, "scanned")
         raw = [m for m in raw
                if any(sponsor_filter in (s.get("MatterSponsorName") or "").lower()
                       for s in current_sponsors(m, sponsors_map.get(m["MatterId"], [])))]
-        print(f"   matched {len(raw)} bills sponsored by '{f['sponsor']}'")
+        print(f"   matched {len(raw)} bills sponsored by '{f['sponsor']}' "
+              f"({scan_failures[0]} sponsor lookups failed)")
 
     # Phase B — heavy detail (histories/attachments/text) only on the matters we keep
     if enrich:
@@ -724,16 +740,20 @@ def assemble(client, ai, snap, old, profile):
 
         def heavy(m):
             mid = m["MatterId"]
-            if mid not in sponsors_map:
-                sponsors_map[mid] = client.sponsors(mid)
-            if sponsors_only:
-                return
-            histories_map[mid] = client.histories(mid)
-            attach_map[mid] = client.attachments(mid)
-            if want_text:
-                tx = client.text_plain(mid, m.get("MatterVersion"))
-                if tx:
-                    text_map[mid] = tx
+            try:
+                if mid not in sponsors_map:
+                    sponsors_map[mid] = client.sponsors(mid) or []
+                if sponsors_only:
+                    return
+                histories_map[mid] = client.histories(mid)
+                attach_map[mid] = client.attachments(mid)
+                if want_text:
+                    tx = client.text_plain(mid, m.get("MatterVersion"))
+                    if tx:
+                        text_map[mid] = tx
+            except Exception:
+                scan_failures[0] += 1
+                sponsors_map.setdefault(mid, [])
 
         if targets:
             print(f"Pulling {'sponsors' if sponsors_only else 'full details'} for {len(targets)} bills...")
@@ -778,6 +798,7 @@ def assemble(client, ai, snap, old, profile):
         "AI drafted this run": ai_drafted, "AI reused from cache": ai_cached,
         "Matters in workbook": len(rows), "Prior snapshot matters": len(old),
         "Changes detected": len(changes), "Token used": bool(getattr(client, "token", None)),
+        "Sponsor scan failures": scan_failures[0],
     }
     return {"rows": rows, "sponsors_map": sponsors_map, "histories_map": histories_map,
             "attach_map": attach_map, "text_map": text_map, "ai_map": ai_map,
@@ -1064,11 +1085,12 @@ def build_member_dossier(member, year):
     since, until = year_window(year)
     flt = {"since": since, "sponsor": member}
     if until: flt["until"] = until
-    profile = {"name": "dossier", "filter": flt, "enrich": True, "text": False, "workers": 4, "impact": "keyword"}
+    profile = {"name": "dossier", "filter": flt, "enrich": True, "sponsors_only": True, "text": False, "workers": 10, "impact": "keyword"}
     snap = Snapshot("/tmp/legistar_state.db"); old = snap.load()
     bundle = assemble(_client(), None, snap, old, profile)
     _tag_rows(bundle["rows"])
-    return {"member": member, "rows": bundle["rows"], "stats": dossier_stats(bundle["rows"], member)}
+    return {"member": member, "rows": bundle["rows"], "stats": dossier_stats(bundle["rows"], member),
+            "scanned": bundle.get("_raw_count"), "scan_failures": bundle["run_info"].get("Sponsor scan failures", 0)}
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def make_dossier_ai(member, stats, key):
@@ -1369,28 +1391,60 @@ with t_dossier:
         members = [manual.strip()] if manual.strip() else []
     who = st.selectbox("Council Member", members, key="dossier_member") if members else None
     run_ai = st.checkbox("Include AI analysis (uses the Anthropic key in the controls panel)", value=bool(anthropic_key.strip()))
+    _have_sponsors = bool(bundle) and any(r.get("_sponsor_names") for r in rows)
+    if _have_sponsors:
+        st.caption("⚡ Fast mode: building from the data already loaded (turn on **Include sponsors** when loading a "
+                   "year to keep this instant). Otherwise it scans that member's year live.")
     if who and st.button("Build dossier", type="primary"):
-        with st.spinner(f"Scanning {who}'s {year} record (a few minutes; cached after)..."):
-            try:
-                dd = build_member_dossier(who, year)
-                st.session_state["dossier"] = dd; st.session_state["dossier_ai"] = ""
-                if run_ai and anthropic_key.strip():
-                    with st.spinner("Writing AI analysis..."):
-                        st.session_state["dossier_ai"] = make_dossier_ai(who, dd["stats"], anthropic_key.strip())
-            except Exception as e:
-                st.error(f"{type(e).__name__}: {e}")
+        try:
+            if _have_sponsors and member_bills(rows, who):
+                mb0 = member_bills(rows, who)
+                dd = {"member": who, "rows": mb0, "stats": dossier_stats(mb0, who)}
+            else:
+                with st.spinner(f"Scanning {who}'s {year} record (faster now; cached after)..."):
+                    dd = build_member_dossier(who, year)
+            st.session_state["dossier"] = dd; st.session_state["dossier_ai"] = ""
+            if run_ai and anthropic_key.strip():
+                with st.spinner("Writing AI analysis..."):
+                    st.session_state["dossier_ai"] = make_dossier_ai(who, dd["stats"], anthropic_key.strip())
+        except Exception as e:
+            st.error(f"{type(e).__name__}: {e}")
     dd = st.session_state.get("dossier")
     if dd:
         stats = dd["stats"]; mb = dd["rows"]; member = dd["member"]
         st.markdown(f"## {member}")
+        # Introductions-only counts (intro.nyc methodology): prime = "introduced", co = "sponsored"
+        _intros = [r for r in mb if r.get("Type") == "Introduction"]
+        _intro_prime = sum(1 for r in _intros if member.lower() in (r.get("Prime Sponsor", "") or "").lower())
+        _intro_co = len(_intros) - _intro_prime
         c = st.columns(4)
-        c[0].metric("Bills (on)", stats["bills_on"]); c[1].metric("As prime", stats["as_prime"])
-        c[2].metric("Passed", stats["by_status"]["passed"]); c[3].metric("Alive", stats["by_status"]["alive"])
+        c[0].metric("Introduced (prime)", stats["as_prime"]); c[1].metric("Co-sponsored", stats["as_cosponsor"])
+        c[2].metric("Enacted/passed", stats["by_status"]["passed"]); c[3].metric("On — total", stats["bills_on"])
+        st.caption(f"**Introductions only** (matches intro.nyc): introduced **{_intro_prime}**, co-sponsored "
+                   f"**{_intro_co}**.  The totals above also include resolutions and land-use items.")
+        import unicodedata as _ud
+        _slug = "-".join(_ud.normalize("NFKD", member).encode("ascii", "ignore").decode()
+                         .lower().replace(".", "").replace("'", "").split())
+        st.markdown(f"🔗 Cross-check this member on [intro.nyc](https://intro.nyc/councilmembers/{_slug}) "
+                    f"(same official data source).")
+        _fails = dd.get("scan_failures") or 0
+        if _fails:
+            st.warning(f"⚠️ {_fails} sponsor lookups failed during the live scan, so this may **undercount**. "
+                       f"Reload (or load **All legislation + Include sponsors** for the year) to get a complete, cached set.")
         cc = st.columns(2)
         if stats["by_topic"]:
             cc[0].subheader("Policy topics"); cc[0].bar_chart(pd.Series(stats["by_topic"]).sort_values(ascending=False))
         if stats["top_coalition"]:
             cc[1].subheader("Top coalition partners"); cc[1].bar_chart(pd.Series(stats["top_coalition"]))
+        cd = st.columns(2)
+        _sc = status_counts(mb)
+        if _sc:
+            cd[0].subheader("Outcomes"); cd[0].bar_chart(pd.Series(_sc))
+        import collections as _co
+        _months = _co.Counter((r.get("_intro_raw") or "")[:7] for r in mb if r.get("_intro_raw"))
+        if len(_months) > 1:
+            cd[1].subheader("Bills introduced over time")
+            cd[1].line_chart(pd.Series(dict(sorted(_months.items()))))
         ai_txt = st.session_state.get("dossier_ai", "")
         if ai_txt:
             st.markdown("### 🧠 AI analysis")
@@ -1453,11 +1507,28 @@ with t_changes:
         st.subheader("Changes since the last load (while this app stays awake)")
         ch = bundle.get("changes", [])
         if ch:
-            st.dataframe(pd.DataFrame(ch, columns=["File", "Change", "Field", "Was", "Now"]),
+            st.dataframe(pd.DataFrame(ch, columns=["File", "Change", "Field", "Was", "Now", "When (last modified UTC)"]),
                          hide_index=True, use_container_width=True)
+            st.caption("**SIGNED ON +** = new co-sponsor, **AMENDED (text)** = the bill's language/version changed "
+                       "(* → A → B), **STATUS** = moved in the process. 'When' is Legistar's last-modified timestamp.")
         else:
-            st.info("No changes detected since the previous load in this session.")
-        st.caption("For permanent daily tracking, the scheduled version (handed to Council IT) keeps a lasting history.")
+            st.info("No diff yet — this compares against the previous load while the app stays awake. The list below "
+                    "always works.")
+        st.divider()
+        st.subheader("🕐 Recently changed (by Legistar last-modified time)")
+        recent = sorted([r for r in rows if r.get("Last Modified (UTC)")],
+                        key=lambda r: r["Last Modified (UTC)"], reverse=True)[:60]
+        if recent:
+            rdf = pd.DataFrame([{"File": r["File"], "Type": r["Type"], "Status": r["Status"],
+                                 "Version": r.get("Version", "*"),
+                                 "Last modified (UTC)": (r["Last Modified (UTC)"] or "")[:16].replace("T", " "),
+                                 "Web Link": r["Web Link"]} for r in recent])
+            st.dataframe(rdf, use_container_width=True, height=420,
+                column_config={"Web Link": st.column_config.LinkColumn("Legistar", display_text="Open")})
+            st.caption("**Version** shows the bill text: * = original, A/B = amended (the language changed). "
+                       "Sort by clicking the 'Last modified' column header.")
+        st.caption("For permanent day-to-day tracking that survives restarts, the scheduled version (handed to "
+                   "Council IT) keeps a lasting history.")
 
 # ---------------- ABOUT ----------------
 with t_about:

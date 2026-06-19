@@ -1033,15 +1033,15 @@ with st.expander("⚙️  Data controls — choose what to load, then press Load
     include_sponsors = a3.checkbox("Include sponsors (slower)", value=False,
         help="On = pull who signed each bill so the list is searchable by member. Off loads much faster.")
     if scope == "By a Council Member":
-        member_name = st.selectbox("Council Member", _dir) if _dir else st.text_input("Council Member", "Hanks")
+        member_name = st.selectbox("Council Member", _dir, key="cp_member") if _dir else st.text_input("Council Member", "Hanks", key="cp_member_txt")
     else:
         member_name = ""
     if scope == "One specific bill":
         _loaded_files = sorted({r["File"] for r in (_pre_bundle or {}).get("rows", []) if r.get("File")})
         if _loaded_files:
-            bill_number = st.selectbox("Pick a bill", _loaded_files)
+            bill_number = st.selectbox("Pick a bill", _loaded_files, key="cp_bill")
         else:
-            bill_number = st.text_input("Bill number", "Int 0220-2026")
+            bill_number = st.text_input("Bill number", "Int 0220-2026", key="cp_bill_txt")
             st.caption("Tip: load **All legislation** once — then this becomes a dropdown of every bill.")
     else:
         bill_number = ""
@@ -1365,9 +1365,9 @@ with t_dossier:
                "Loads on its own.")
     members = get_directory()
     if not members:
-        manual = st.text_input("Directory unavailable — type a member's last name", "Hanks")
+        manual = st.text_input("Directory unavailable — type a member's last name", "Hanks", key="dossier_manual")
         members = [manual.strip()] if manual.strip() else []
-    who = st.selectbox("Council Member", members) if members else None
+    who = st.selectbox("Council Member", members, key="dossier_member") if members else None
     run_ai = st.checkbox("Include AI analysis (uses the Anthropic key in the controls panel)", value=bool(anthropic_key.strip()))
     if who and st.button("Build dossier", type="primary"):
         with st.spinner(f"Scanning {who}'s {year} record (a few minutes; cached after)..."):

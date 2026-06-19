@@ -643,25 +643,85 @@ def run_pull(what, bill_number, since_date, add_ai, anthropic_key):
     return bundle
 
 if go:
+    st.session_state.pop("bundle", None)
     try:
         with st.spinner("Working... please wait."):
-            bundle = run_pull(what, bill_number, since_date, add_ai, anthropic_key)
+            st.session_state["bundle"] = run_pull(what, bill_number, since_date, add_ai, anthropic_key)
     except requests.exceptions.HTTPError as e:
         code = getattr(e.response, "status_code", "?")
         body = (getattr(e.response, "text", "") or "")[:600]
-        st.error(f"NYC's API returned HTTP {code}. Message: {body}")
-        st.stop()
+        st.error(f"NYC's API returned HTTP {code}. Message: {body}"); st.stop()
     except Exception as e:
-        st.error(f"Something went wrong: {type(e).__name__}: {e}")
-        st.stop()
+        st.error(f"Something went wrong: {type(e).__name__}: {e}"); st.stop()
 
+bundle = st.session_state.get("bundle")
+if bundle:
     rows = bundle["rows"]
     if not rows:
         st.warning("No bills matched. Try a wider date or check the bill number.")
     else:
         st.success(f"Found {len(rows)} bills.")
         df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows])
-        st.dataframe(df, use_container_width=True, height=500)
+        st.dataframe(df, use_container_width=True, height=320,
+                     column_config={"Web Link": st.column_config.LinkColumn("Legistar", display_text="Open")})
         with open("/tmp/legislation.xlsx", "rb") as fh:
-            st.download_button("Download as Excel", fh.read(), "NYC_Council_legislation.xlsx",
-                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button("Download everything as Excel", fh.read(),
+                "NYC_Council_legislation.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        st.divider()
+        st.subheader("See ALL details for one bill")
+        pick = st.selectbox("Pick a bill", [r["File"] for r in rows])
+        r = next(x for x in rows if x["File"] == pick)
+        mid = r["MatterId"]
+
+        st.markdown(f"### {r['File']} — {r['Type']}")
+        st.markdown(f"**{r['Title']}**")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Status", r["Status"] or "-")
+        m2.metric("Sponsors", r["Sponsors (#)"] if r["Sponsors (#)"] != "" else "-")
+        m3.metric("Committee", "")
+        m3.write(r["Committee/Body"] or "-")
+        st.markdown(f"[➡ Open this bill on the official Legistar site]({r['Web Link']})")
+        if r.get("Pillar Tags"):
+            st.markdown(f"**Topic tags:** {r['Pillar Tags']}  \n**Staten Island / D-49 signal:** {r.get('SI/D-49 Signal','')}")
+
+        sp = r.get("_sponsor_objs", [])
+        if sp:
+            st.markdown("**Sponsors (in signature order):**")
+            st.dataframe(pd.DataFrame([
+                {"#": s.get("MatterSponsorSequence"),
+                 "Sponsor": s.get("MatterSponsorName"),
+                 "Role": "Prime" if s.get("MatterSponsorSequence") == 0 else "Co-sponsor"} for s in sp]),
+                hide_index=True, use_container_width=True)
+
+        hi = bundle["histories_map"].get(mid, [])
+        if hi:
+            st.markdown("**Action history:**")
+            st.dataframe(pd.DataFrame([
+                {"Date": _date(h.get("MatterHistoryActionDate")),
+                 "Action": (h.get("MatterHistoryActionName") or "").strip(),
+                 "By": h.get("MatterHistoryActionBodyName"),
+                 "Result": h.get("MatterHistoryPassedFlagName")}
+                for h in sorted(hi, key=lambda x: x.get("MatterHistoryActionDate") or "")]),
+                hide_index=True, use_container_width=True)
+
+        at = bundle["attach_map"].get(mid, [])
+        if at:
+            st.markdown("**Attachments (click to open):**")
+            for a in at:
+                st.markdown(f"- [{a.get('MatterAttachmentName')}]({a.get('MatterAttachmentHyperlink')})")
+
+        ai_b = bundle.get("ai_map", {}).get(mid)
+        if ai_b:
+            st.markdown("**AI impact read (analysis, not official):**")
+            st.write(f"- **Purpose:** {ai_b.get('purpose','')}")
+            st.write(f"- **Who it affects:** {ai_b.get('affects','')}")
+            st.write(f"- **D-49 angle:** {ai_b.get('d49','')}")
+
+        tx = bundle["text_map"].get(mid, "")
+        if tx:
+            with st.expander("Full bill text"):
+                st.text(tx)
+        else:
+            st.caption("(Full bill text is only pulled for 'One specific bill' and 'Hanks's bills'.)")

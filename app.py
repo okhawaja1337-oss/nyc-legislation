@@ -597,29 +597,29 @@ def main():
 
 
 # ===========================================================================
-# WEBSITE UI (Streamlit) — this is what visitors see and click
+# WEBSITE UI (Streamlit)
 # ===========================================================================
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="NYC Council Legislation — live", layout="wide")
-st.title("🗽 NYC Council Legislation — live")
+st.set_page_config(page_title="NYC Council Legislation - live", layout="wide")
+st.title("NYC Council Legislation - live")
 st.caption("Pulls current data straight from NYC's Legistar API. Always up to date.")
 
-NYC_TOKEN = "Uvxb0j9syjm3aI8h46DhQvnX5skN4aSUL0x_Ee3ty9M.ew0KICAiVmVyc2lvbiI6IDEsDQogICJOYW1lIjogIk5ZQyByZWFkIHRva2VuIDIwMTcxMDI2IiwNCiAgIkRhdGUiOiAiMjAxNy0xMC0yNlQxNjoyNjo1Mi42ODM0MDYtMDU6MDoiLA0KICAiV3JpdGUiOiBmYWxzZQ0KfQ"
+NYC_TOKEN = "Uvxb0j9syjm3aI8h46DhQvnX5skN4aSUL0x_Ee3ty9M.ew0KICAiVmVyc2lvbiI6IDEsDQogICJOYW1lIjogIk5ZQyByZWFkIHRva2VuIDIwMTcxMDI2IiwNCiAgIkRhdGUiOiAiMjAxNy0xMC0yNlQxNjoyNjo1Mi42ODM0MDYtMDU6MDAiLA0KICAiV3JpdGUiOiBmYWxzZQ0KfQ"
 
 with st.form("options"):
     what = st.selectbox(
         "What do you want?",
         ["One specific bill", "Just Council Member Hanks's bills", "Everything introduced this session"])
-    col1, col2 = st.columns(2)
-    bill_number = col1.text_input("Bill number (for 'One specific bill')", "Int 0225-2026")
-    since_date = col2.text_input("Bills introduced on/after (YYYY-MM-DD)", "2024-01-01")
+    c1, c2 = st.columns(2)
+    bill_number = c1.text_input("Bill number (for 'One specific bill')", "Int 0225-2026")
+    since_date = c2.text_input("Bills introduced on/after (YYYY-MM-DD)", "2024-01-01")
     add_ai = st.checkbox("Add AI impact bullets (needs your Anthropic key)", value=False)
     anthropic_key = st.text_input("Anthropic API key (optional)", "", type="password")
-    go = st.form_submit_button("Get legislation ▶")
+    go = st.form_submit_button("Get legislation")
 
-st.info("Single bill = a few seconds. \"Hanks's bills\" and \"Everything\" scan the whole city and take a few minutes.")
+st.info("Single bill = a few seconds. 'Hanks's bills' and 'Everything' scan the whole city and take a few minutes.")
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def run_pull(what, bill_number, since_date, add_ai, anthropic_key):
@@ -643,8 +643,18 @@ def run_pull(what, bill_number, since_date, add_ai, anthropic_key):
     return bundle
 
 if go:
-    with st.spinner("Working… please wait."):
-        bundle = run_pull(what, bill_number, since_date, add_ai, anthropic_key)
+    try:
+        with st.spinner("Working... please wait."):
+            bundle = run_pull(what, bill_number, since_date, add_ai, anthropic_key)
+    except requests.exceptions.HTTPError as e:
+        code = getattr(e.response, "status_code", "?")
+        body = (getattr(e.response, "text", "") or "")[:600]
+        st.error(f"NYC's API returned HTTP {code}. Message: {body}")
+        st.stop()
+    except Exception as e:
+        st.error(f"Something went wrong: {type(e).__name__}: {e}")
+        st.stop()
+
     rows = bundle["rows"]
     if not rows:
         st.warning("No bills matched. Try a wider date or check the bill number.")
@@ -653,5 +663,5 @@ if go:
         df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows])
         st.dataframe(df, use_container_width=True, height=500)
         with open("/tmp/legislation.xlsx", "rb") as fh:
-            st.download_button("⬇️ Download as Excel", fh.read(), "NYC_Council_legislation.xlsx",
+            st.download_button("Download as Excel", fh.read(), "NYC_Council_legislation.xlsx",
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

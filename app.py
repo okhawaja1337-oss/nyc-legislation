@@ -781,7 +781,8 @@ def assemble(client, ai, snap, old, profile):
     }
     return {"rows": rows, "sponsors_map": sponsors_map, "histories_map": histories_map,
             "attach_map": attach_map, "text_map": text_map, "ai_map": ai_map,
-            "changes": changes, "run_info": run_info, "impact_mode": impact_mode}
+            "changes": changes, "run_info": run_info, "impact_mode": impact_mode,
+            "_filter": odata, "_raw_count": len(raw)}
 
 
 def main():
@@ -926,39 +927,49 @@ def year_window(year):
 
 st.markdown("""
 <style>
-:root { --navy:#0b2545; --blue:#2563eb; --ink:#0b1f3a; --line:#e6e8ee; --bg:#f4f6fb; --teal:#0f766e; }
+:root { --bg:#0a0f1c; --bg2:#0d1426; --surf:#121c33; --surf2:#16213b; --line:#243352;
+        --ink:#e7eefb; --mut:#9fb2d0; --blue:#3b82f6; --cyan:#38bdf8; --teal:#2dd4bf; --green:#34d399; }
 [data-testid="stSidebar"] { display:none !important; }
 [data-testid="stSidebarCollapsedControl"] { display:none !important; }
-.stApp { background: var(--bg); }
-.block-container { padding-top: 1.0rem; max-width: 1420px; }
-.appbar { background: linear-gradient(110deg,#0b2545 0%,#13315c 52%,#1d4ed8 145%);
+.stApp { background: radial-gradient(1200px 600px at 80% -10%, #14233f 0%, var(--bg) 55%) fixed; color: var(--ink); }
+.block-container { padding-top: 1.0rem; max-width: 1440px; }
+body, .stMarkdown, p, span, label, div { color: var(--ink); }
+.appbar { background: linear-gradient(110deg,#0b1226 0%,#16264a 50%,#1e3a8a 140%);
   color:#fff; border-radius:16px; padding:18px 22px; margin-bottom:14px;
-  box-shadow:0 8px 26px rgba(13,37,90,.20); position:relative; overflow:hidden; }
-.appbar:after { content:""; position:absolute; right:-40px; top:-60px; width:220px; height:220px;
-  background:radial-gradient(circle, rgba(255,255,255,.10) 0%, rgba(255,255,255,0) 70%); }
-.appbar-title { font-size:1.55rem; font-weight:800; letter-spacing:.2px; }
-.appbar-sub { opacity:.92; font-size:.9rem; margin-top:3px; }
-.livepill { position:absolute; top:18px; right:22px; background:rgba(255,255,255,.16);
-  color:#bbf7d0; font-weight:700; font-size:.7rem; padding:4px 11px; border-radius:999px; letter-spacing:.6px; }
-div[data-testid="stMetric"] { background:#fff; border:1px solid var(--line); border-radius:14px;
-  padding:14px 16px; box-shadow:0 1px 3px rgba(16,24,40,.05); }
-div[data-testid="stMetricValue"] { color:var(--navy); font-weight:800; }
-div[data-testid="stMetricLabel"] { color:#5b6b86; font-weight:600; }
-.stTabs [data-baseweb="tab-list"] { gap:6px; flex-wrap:wrap; border-bottom:2px solid var(--line); }
-.stTabs [data-baseweb="tab"] { background:#fff; border:1px solid var(--line); border-bottom:none;
-  border-radius:11px 11px 0 0; padding:7px 14px; font-weight:600; color:#33415c; }
-.stTabs [aria-selected="true"] { background:var(--navy) !important; color:#fff !important; border-color:var(--navy); }
-.stButton>button { background:var(--blue); color:#fff; border:none; border-radius:10px; font-weight:700; padding:.5rem 1.1rem; }
-.stButton>button:hover { background:#1e40af; color:#fff; }
-.stDownloadButton>button { background:var(--teal); color:#fff; border:none; border-radius:10px; font-weight:700; }
-.stDownloadButton>button:hover { background:#115e59; color:#fff; }
-[data-testid="stExpander"] { border:1px solid var(--line); border-radius:14px; background:#fff;
-  box-shadow:0 1px 3px rgba(16,24,40,.04); }
-[data-testid="stExpander"] summary { font-weight:700; color:var(--navy); }
+  border:1px solid #24365e; box-shadow:0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
+  position:relative; overflow:hidden; }
+.appbar:after { content:""; position:absolute; right:-30px; top:-70px; width:240px; height:240px;
+  background:radial-gradient(circle, rgba(56,189,248,.18) 0%, rgba(56,189,248,0) 70%); }
+.appbar-title { font-size:1.55rem; font-weight:800; letter-spacing:.3px; color:#fff; }
+.appbar-sub { opacity:.85; font-size:.9rem; margin-top:3px; color:#cdd9f0; }
+.livepill { position:absolute; top:18px; right:22px; background:rgba(52,211,153,.15);
+  color:#6ee7b7; font-weight:700; font-size:.7rem; padding:4px 11px; border-radius:999px; letter-spacing:.6px;
+  border:1px solid rgba(52,211,153,.35); }
+div[data-testid="stMetric"] { background:linear-gradient(180deg,var(--surf) 0%,var(--bg2) 100%);
+  border:1px solid var(--line); border-radius:14px; padding:14px 16px;
+  box-shadow:0 4px 14px rgba(0,0,0,.35); }
+div[data-testid="stMetricValue"] { color:var(--cyan); font-weight:800; }
+div[data-testid="stMetricLabel"] { color:var(--mut); font-weight:600; }
+.stTabs [data-baseweb="tab-list"] { gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+.stTabs [data-baseweb="tab"] { background:var(--surf); border:1px solid var(--line); border-bottom:none;
+  border-radius:11px 11px 0 0; padding:7px 14px; font-weight:600; color:var(--mut); }
+.stTabs [aria-selected="true"] { background:linear-gradient(180deg,#1e40af,#1d4ed8) !important; color:#fff !important;
+  border-color:#2a4fa0; box-shadow:0 0 0 1px rgba(56,189,248,.25) inset; }
+.stButton>button { background:linear-gradient(180deg,#2563eb,#1d4ed8); color:#fff; border:1px solid #2a4fa0;
+  border-radius:10px; font-weight:700; padding:.5rem 1.1rem; box-shadow:0 4px 14px rgba(37,99,235,.35); }
+.stButton>button:hover { background:linear-gradient(180deg,#1d4ed8,#1e40af); color:#fff; }
+.stDownloadButton>button { background:linear-gradient(180deg,#0d9488,#0f766e); color:#fff; border:1px solid #115e59;
+  border-radius:10px; font-weight:700; }
+[data-testid="stExpander"] { border:1px solid var(--line); border-radius:14px;
+  background:linear-gradient(180deg,var(--surf) 0%,var(--bg2) 100%); box-shadow:0 4px 16px rgba(0,0,0,.35); }
+[data-testid="stExpander"] summary { font-weight:700; color:var(--ink); }
 [data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:12px; }
-a { color:var(--blue) !important; }
+[data-baseweb="select"]>div, .stTextInput input, .stNumberInput input {
+  background:var(--surf2) !important; color:var(--ink) !important; border-color:var(--line) !important; }
+a { color:var(--cyan) !important; }
 h1,h2,h3 { color:var(--ink); }
-div[data-testid="stAlert"] { border-radius:12px; }
+div[data-testid="stAlert"] { border-radius:12px; background:var(--surf); border:1px solid var(--line); color:var(--ink); }
+hr { border-color:var(--line); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1088,15 +1099,34 @@ def run_pull(scope, year, include_sponsors, bill_number, member_name, add_ai, an
     snap = Snapshot("/tmp/legistar_state.db"); old = snap.load()
     ai = AIImpact("claude-haiku-4-5-20251001") if profile["impact"] == "ai" else None
     bundle = assemble(client, ai, snap, old, profile)
+    if scope == "All legislation (browse list)" and not bundle["rows"] and until:
+        profile["filter"] = {"since": since}
+        bundle = assemble(client, ai, snap, old, profile)
     _tag_rows(bundle["rows"], bundle["text_map"])
     snap.save(bundle["rows"]); build_workbook(bundle, "/tmp/legislation.xlsx")
     return bundle
 
+with st.expander("🔧 Connection test — open this if a year won't load"):
+    st.caption("Runs the exact queries the loader uses and shows what NYC Legistar returns, so we can see the problem.")
+    if st.button("Run connection test"):
+        c = _client()
+        for label, flt in [("2026", "MatterIntroDate ge datetime'2026-01-01' and MatterIntroDate lt datetime'2027-01-01'"),
+                           ("2025", "MatterIntroDate ge datetime'2025-01-01' and MatterIntroDate lt datetime'2026-01-01'"),
+                           ("no filter (first page)", None)]:
+            try:
+                res = c.matters(flt)
+                st.write(f"**{label}** → {len(res)} matters. Sample: " + ", ".join(m.get('MatterFile','?') for m in res[:6]))
+            except Exception as e:
+                st.error(f"**{label}** query failed: {type(e).__name__}: {e}")
+
 if load:
     try:
         with st.spinner("Working... pulling from Legistar. Big years can take a moment."):
-            st.session_state["bundle"] = run_pull(scope, year, include_sponsors, bill_number, member_name, add_ai, anthropic_key)
-            st.session_state["loaded_year"] = year
+            _b = run_pull(scope, year, include_sponsors, bill_number, member_name, add_ai, anthropic_key)
+        if not _b["rows"]:
+            run_pull.clear()  # never trap a transient/empty result in the cache
+        st.session_state["bundle"] = _b
+        st.session_state["loaded_year"] = year
     except requests.exceptions.HTTPError as e:
         st.error(f"NYC API returned HTTP {getattr(e.response,'status_code','?')}: {(getattr(e.response,'text','') or '')[:400]}")
     except Exception as e:
@@ -1109,6 +1139,11 @@ if not bundle:
     st.info("**Open the ⚙️ Data controls panel above, pick a Year and Scope, then press _Load data_.**  \n"
             "Start with **All legislation** + **2026** to load every Introduction, Resolution, and Land Use item "
             "for the year — then use the **Legislation list** tab to search by number or word.")
+elif not rows:
+    st.warning(f"This load returned **0 bills**.  Filter used: `{bundle.get('_filter')}` · raw matches from "
+               f"Legistar: **{bundle.get('_raw_count')}**.  Try another year, or clear filters in the controls panel.")
+elif load:
+    st.success(f"Loaded **{len(rows)}** items for **{loaded_year}**. Use the tabs below.")
 
 t_list, t_hear, t_detail, t_members, t_dossier, t_compare, t_over, t_changes, t_about = st.tabs(
     ["📋 Legislation list", "📅 Hearings", "📄 Bill detail", "👤 Members", "📕 Dossier", "⚖️ Compare",
@@ -1249,6 +1284,27 @@ with t_detail:
         d[2].write("**Committee**"); d[2].write(r["Committee/Body"] or "-")
         st.markdown(f"[➡ Open on the official Legistar site]({r['Web Link']})")
         st.markdown(f"**Topic tags:** {r.get('Topic tags','') or '—'}  \n**Boroughs named:** {r.get('Boroughs named','')}")
+
+        st.markdown("### 🔬 Full policy analysis")
+        _an = st.session_state.get("analyses", {}).get(mid)
+        if not _an and anthropic_key.strip():
+            with st.spinner("Analyzing this bill (NYC Open Data + AI)..."):
+                try:
+                    r_an = dict(r); r_an["_sponsor_objs"] = sp
+                    _an = AIImpact("claude-haiku-4-5-20251001", api_key=anthropic_key.strip()).analyze(r_an, tx, build_data_context(r))
+                    st.session_state.setdefault("analyses", {})[mid] = _an
+                except Exception as e:
+                    st.error(f"{type(e).__name__}: {e}")
+        if _an:
+            st.caption("Auto-generated for this bill, grounded in the bill text and any retrieved NYC Open Data. "
+                       "Inference, not official — verify figures with OMB / IBO / agency sources.")
+            st.markdown(_an)
+            if st.button("↻ Regenerate analysis", key="an_btn"):
+                st.session_state.get("analyses", {}).pop(mid, None); st.rerun()
+        elif not anthropic_key.strip():
+            st.info("➕ Add your **Anthropic API key** in the ⚙️ controls panel to auto-generate a full analysis "
+                    "(what it does, who supports/opposes, political, district/borough/city, fiscal, why it exists, "
+                    "what happens if passed) for every bill you open.")
         if sp:
             st.markdown("**Sponsors (signature order):**")
             st.dataframe(pd.DataFrame([{"#": s.get("MatterSponsorSequence"), "Sponsor": s.get("MatterSponsorName"),
@@ -1275,24 +1331,7 @@ with t_detail:
             with st.expander("Full bill text"):
                 st.text(tx)
 
-        st.divider()
-        if st.button("🔬 Generate full analysis (uses your Anthropic key)", key="an_btn"):
-            if not anthropic_key.strip():
-                st.warning("Add your Anthropic key in the ⚙️ controls panel above first.")
-            else:
-                with st.spinner("Pulling any open data and writing the analysis..."):
-                    try:
-                        r_an = dict(r); r_an["_sponsor_objs"] = sp
-                        an = AIImpact("claude-haiku-4-5-20251001", api_key=anthropic_key.strip()).analyze(r_an, tx, build_data_context(r))
-                        st.session_state.setdefault("analyses", {})[mid] = an
-                    except Exception as e:
-                        st.error(f"{type(e).__name__}: {e}")
-        _an = st.session_state.get("analyses", {}).get(mid)
-        if _an:
-            st.markdown("### 🔬 Full policy analysis")
-            st.caption("AI-generated, grounded in the bill text and any retrieved NYC Open Data. Inference, not "
-                       "official — verify all figures with OMB / IBO / agency sources.")
-            st.markdown(_an)
+
 
 # ---------------- MEMBERS ----------------
 with t_members:

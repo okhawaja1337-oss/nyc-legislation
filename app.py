@@ -424,6 +424,33 @@ REAL DATA CONTEXT (may be empty):
 Briefing:"""
 
 
+QUERY_PLAN_PROMPT = """Convert the user's question about NYC City Council bills into a JSON execution plan.
+Return ONLY a JSON object (no prose, no markdown fences) with these keys:
+- "intent": one of "filter" (list/find bills), "compare" (compare named bills), "explain" (explain one bill), "answer" (general question about the loaded set).
+- "bill_refs": array of bill identifiers the user names, e.g. ["220","Int 0419-2026"]. Empty if none.
+- "filters": object; include only keys that apply: "keyword" (free text), "topic" (one of: Arts & Culture, Neighborhood Dev, Economic Dev, Public Safety/Crisis, Health & Hospitals), "type" (e.g. Introduction, Resolution, Land Use Application), "status" (e.g. Committee, Enacted), "borough" (Manhattan/Brooklyn/Queens/Bronx/Staten Island), "sponsor" (a member name), "min_sponsors" (integer).
+- "needs_detail": true if answering needs the full text/sponsors of the named bills (comparisons and explanations do).
+
+User question: {q}
+JSON:"""
+
+
+QUERY_ANSWER_PROMPT = """You are a NYC Council legislative analyst. Answer the user's question using ONLY the EVIDENCE \
+provided (matched bills and/or specific bill details). Rules:
+- Be concrete and cite bill file numbers (e.g., Int 0220-2026).
+- If listing, give a one-line summary then the relevant bills. If comparing, use a clear structured comparison.
+- Do NOT invent bills, sponsors, numbers, or facts not present in the evidence.
+- If sponsor counts are marked unavailable, say so and suggest loading with "Include sponsors".
+- If the evidence is empty or insufficient, say what to load to answer it.
+
+USER QUESTION: {q}
+
+EVIDENCE (JSON):
+{ev}
+
+Answer:"""
+
+
 def text_hash(*parts):
     return hashlib.sha1("||".join(p or "" for p in parts).encode("utf-8", "ignore")).hexdigest()[:16]
 
@@ -481,6 +508,37 @@ class AIImpact:
         r.raise_for_status()
         data = r.json()
         return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
+
+    def chat_plan(self, q):
+        if not self.key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        body = {"model": self.model, "max_tokens": 400,
+                "messages": [{"role": "user", "content": QUERY_PLAN_PROMPT.format(q=q[:1500])}]}
+        r = self.s.post(ANTHROPIC_URL, headers={
+            "x-api-key": self.key, "anthropic-version": "2023-06-01",
+            "content-type": "application/json"}, json=body, timeout=60)
+        r.raise_for_status()
+        txt = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+        try:
+            return json.loads(txt)
+        except Exception:
+            m = re.search(r"\{.*\}", txt, re.DOTALL)
+            try:
+                return json.loads(m.group(0)) if m else {}
+            except Exception:
+                return {}
+
+    def chat_answer(self, q, evidence):
+        if not self.key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        ev = json.dumps(evidence, ensure_ascii=False)[:9000]
+        body = {"model": self.model, "max_tokens": 1200,
+                "messages": [{"role": "user", "content": QUERY_ANSWER_PROMPT.format(q=q[:1500], ev=ev)}]}
+        r = self.s.post(ANTHROPIC_URL, headers={
+            "x-api-key": self.key, "anthropic-version": "2023-06-01",
+            "content-type": "application/json"}, json=body, timeout=120)
+        r.raise_for_status()
+        return "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text").strip()
 
 
 def parse_bullets(txt):
@@ -1167,8 +1225,8 @@ elif not rows:
 elif load:
     st.success(f"Loaded **{len(rows)}** items for **{loaded_year}**. Use the tabs below.")
 
-t_list, t_hear, t_detail, t_members, t_dossier, t_compare, t_over, t_changes, t_about = st.tabs(
-    ["📋 Legislation list", "📅 Hearings", "📄 Bill detail", "👤 Members", "📕 Dossier", "⚖️ Compare",
+t_list, t_ask, t_hear, t_detail, t_members, t_dossier, t_compare, t_over, t_changes, t_about = st.tabs(
+    ["📋 Legislation list", "💬 Ask", "📅 Hearings", "📄 Bill detail", "👤 Members", "📕 Dossier", "⚖️ Compare",
      "📊 Overview", "🔔 What changed", "ℹ️ About"])
 
 def need_data():
@@ -1243,6 +1301,110 @@ with t_list:
                 with open("/tmp/analysis.xlsx", "rb") as fh:
                     st.download_button("⬇️ Download analyses (Excel)", fh.read(), "bill_analyses.xlsx",
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# ---------------- ASK (AI chat over loaded data) ----------------
+with t_ask:
+    st.subheader("💬 Ask the legislation")
+    if not bundle:
+        need_data()
+    elif not anthropic_key.strip():
+        st.info("Add your Anthropic key in the ⚙️ controls panel to use the AI chat.")
+    else:
+        st.caption("Try: *housing bills with 8+ sponsors* · *compare Int 220 to Int 419* · "
+                   "*what did Hanks introduce on public safety?* · *which enacted bills name Staten Island?* — "
+                   "it reads the loaded bills and fetches a named bill's text/sponsors on demand.")
+
+        def _resolve_ref(ref, rws):
+            ref = (ref or "").strip()
+            for r in rws:
+                if (r["File"] or "").lower() == ref.lower():
+                    return r
+            digits = "".join(ch for ch in ref if ch.isdigit())
+            if digits:
+                n = int(digits)
+                for r in rws:
+                    _, num, _ = parse_file(r["File"])
+                    if num == n:
+                        return r
+            for r in rws:
+                if ref.lower() and ref.lower() in (r["File"] or "").lower():
+                    return r
+            return None
+
+        def _apply_filters(rws, fl):
+            f = rws
+            if fl.get("keyword"): f = [r for r in f if matches_search(r, fl["keyword"])]
+            if fl.get("topic"): f = [r for r in f if str(fl["topic"]).lower() in (r.get("Topic tags") or "").lower()]
+            if fl.get("type"): f = [r for r in f if str(fl["type"]).lower() in (r.get("Type") or "").lower()]
+            if fl.get("status"): f = [r for r in f if str(fl["status"]).lower() in (r.get("Status") or "").lower()]
+            if fl.get("borough"): f = [r for r in f if str(fl["borough"]) in (r.get("Boroughs named") or "")]
+            if fl.get("sponsor"):
+                sq = str(fl["sponsor"]).lower()
+                f = [r for r in f if any(sq in (n or "").lower() for n in r.get("_sponsor_names", []))
+                     or sq in (r.get("Prime Sponsor", "") or "").lower()]
+            if fl.get("min_sponsors"):
+                try:
+                    n = int(fl["min_sponsors"])
+                    f = [r for r in f if isinstance(r.get("Sponsors (#)"), int) and r["Sponsors (#)"] >= n]
+                except Exception:
+                    pass
+            return f
+
+        def _run_agent(q):
+            ai = AIImpact("claude-haiku-4-5-20251001", api_key=anthropic_key.strip())
+            plan = ai.chat_plan(q) or {}
+            evidence = {}
+            sponsors_loaded = any(r.get("_sponsor_names") for r in rows)
+            for ref in (plan.get("bill_refs") or [])[:4]:
+                r = _resolve_ref(ref, rows)
+                evidence.setdefault("named_bills", [])
+                if not r:
+                    evidence["named_bills"].append({"ref": ref, "note": "not in loaded set"}); continue
+                item = {"File": r["File"], "Type": r["Type"], "Title": r["Title"], "Status": r["Status"],
+                        "Committee": r["Committee/Body"], "Topic": r.get("Topic tags", ""), "Prime": r.get("Prime Sponsor", "")}
+                if plan.get("needs_detail"):
+                    det = fetch_detail(r["MatterId"])
+                    sps = current_sponsors({"MatterVersion": None}, det.get("sponsors", [])) or r.get("_sponsor_objs", [])
+                    item["Sponsors"] = [x.get("MatterSponsorName") for x in sps]
+                    item["Text excerpt"] = (det.get("text", "") or r.get("Name", ""))[:3000]
+                    item["Recent actions"] = [f"{_date(h.get('MatterHistoryActionDate'))}: {(h.get('MatterHistoryActionName') or '').strip()}"
+                                              for h in (det.get("histories") or [])[-6:]]
+                else:
+                    item["Sponsors (#)"] = r.get("Sponsors (#)", "")
+                evidence["named_bills"].append(item)
+            fl = plan.get("filters") or {}
+            if fl or plan.get("intent") == "filter":
+                matched = _apply_filters(rows, fl)
+                evidence["matched_count"] = len(matched)
+                evidence["matched_sample"] = [{"File": r["File"], "Type": r["Type"], "Title": (r["Title"] or "")[:90],
+                    "Status": r["Status"], "Sponsors (#)": r.get("Sponsors (#)", ""),
+                    "Prime": r.get("Prime Sponsor", ""), "Topic": r.get("Topic tags", "")} for r in matched[:40]]
+                if fl.get("min_sponsors") and not sponsors_loaded:
+                    evidence["note"] = "Sponsor counts unavailable — load with 'Include sponsors' for accurate min_sponsors filtering."
+            if not evidence:
+                evidence["overview"] = {"loaded": len(rows), "by_status": status_counts(rows), "by_type": type_counts(rows)}
+            return ai.chat_answer(q, evidence)
+
+        history = st.session_state.setdefault("ask_history", [])
+        for msg in history:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+        with st.form("ask_form", clear_on_submit=True):
+            qcol, bcol = st.columns([5, 1])
+            q = qcol.text_input("Ask about the loaded bills", label_visibility="collapsed",
+                                placeholder="e.g. compare Int 220 to Int 419")
+            sent = bcol.form_submit_button("Send")
+        if history and st.button("Clear chat", key="ask_clear"):
+            st.session_state["ask_history"] = []; st.rerun()
+        if sent and q.strip():
+            history.append({"role": "user", "content": q})
+            with st.spinner("Reading the bills and answering…"):
+                try:
+                    ans = _run_agent(q)
+                except Exception as e:
+                    ans = f"Sorry — {type(e).__name__}: {e}"
+            history.append({"role": "assistant", "content": ans})
+            st.rerun()
 
 # ---------------- HEARINGS ----------------
 with t_hear:

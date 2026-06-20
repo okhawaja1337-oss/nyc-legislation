@@ -1299,9 +1299,9 @@ elif not rows:
 elif load:
     st.success(f"Loaded **{len(rows)}** items for **{loaded_year}**. Use the tabs below.")
 
-t_list, t_ask, t_hear, t_detail, t_members, t_dossier, t_compare, t_net, t_over, t_changes, t_about = st.tabs(
+t_list, t_ask, t_hear, t_detail, t_members, t_dossier, t_compare, t_net, t_map, t_over, t_changes, t_about = st.tabs(
     ["📋 Legislation list", "💬 Ask", "📅 Hearings", "📄 Bill detail", "👤 Members", "📕 Dossier", "⚖️ Compare",
-     "🕸️ Coalitions", "📊 Overview", "🔔 What changed", "ℹ️ About"])
+     "🕸️ Coalitions", "🗺️ District map", "📊 Overview", "🔔 What changed", "ℹ️ About"])
 
 def need_data():
     st.info("Load data from the ⚙️ controls panel above first (this tab uses that data).")
@@ -1580,24 +1580,26 @@ with t_detail:
 
         st.markdown("### 🔬 Full policy analysis")
         _an = st.session_state.get("analyses", {}).get(mid)
-        if not _an and anthropic_key.strip():
-            with st.spinner("Analyzing this bill (NYC Open Data + AI)..."):
-                try:
-                    r_an = dict(r); r_an["_sponsor_objs"] = sp
-                    _an = AIImpact("claude-haiku-4-5-20251001", api_key=anthropic_key.strip()).analyze(r_an, tx, build_data_context(r))
-                    st.session_state.setdefault("analyses", {})[mid] = _an
-                except Exception as e:
-                    st.error(f"{type(e).__name__}: {e}")
-        if _an:
-            st.caption("Auto-generated for this bill, grounded in the bill text and any retrieved NYC Open Data. "
-                       "Inference, not official — verify figures with OMB / IBO / agency sources.")
-            st.markdown(_an)
-            if st.button("↻ Regenerate analysis", key="an_btn"):
-                st.session_state.get("analyses", {}).pop(mid, None); st.rerun()
-        elif not anthropic_key.strip():
-            st.info("➕ Add your **Anthropic API key** in the ⚙️ controls panel to auto-generate a full analysis "
+        if not anthropic_key.strip():
+            st.info("➕ Add your **Anthropic API key** in the ⚙️ controls panel to generate a full analysis "
                     "(what it does, who supports/opposes, political, district/borough/city, fiscal, why it exists, "
-                    "what happens if passed) for every bill you open.")
+                    "what happens if passed).")
+        else:
+            cg = st.columns([1, 3])
+            if cg[0].button("Generate analysis" if not _an else "↻ Regenerate", key=f"an_btn_{mid}"):
+                with st.spinner("Analyzing this bill (NYC Open Data + AI)… ~10–20s"):
+                    try:
+                        r_an = dict(r); r_an["_sponsor_objs"] = sp
+                        _an = AIImpact("claude-haiku-4-5-20251001", api_key=anthropic_key.strip()).analyze(r_an, tx, build_data_context(r))
+                        st.session_state.setdefault("analyses", {})[mid] = _an
+                    except Exception as e:
+                        st.error(f"{type(e).__name__}: {e}")
+            if not _an:
+                cg[1].caption("On-demand, so opening a bill stays fast.")
+        if _an:
+            st.caption("Grounded in the bill text and any retrieved NYC Open Data. Inference, not official — verify "
+                       "figures with OMB / IBO / agency sources.")
+            st.markdown(_an)
         if sp:
             st.markdown("**Sponsors (signature order):**")
             st.dataframe(pd.DataFrame([{"#": s.get("MatterSponsorSequence"), "Sponsor": s.get("MatterSponsorName"),
@@ -1610,29 +1612,26 @@ with t_detail:
                 "By": h.get("MatterHistoryActionBodyName"), "Result": h.get("MatterHistoryPassedFlagName")}
                 for h in sorted(hi, key=lambda x: x.get("MatterHistoryActionDate") or "")]),
                 hide_index=True, use_container_width=True)
-        has_rollcall = any(h.get("MatterHistoryRollCallFlag") for h in (hi or []))
-        with st.expander("🗳️ Roll-call votes — who voted yes / no" + ("" if has_rollcall else "  (none recorded yet)")):
-            if not has_rollcall:
-                st.caption("No roll-call votes are recorded for this bill yet (most bills are voted in committee/stated "
-                           "only once they advance).")
-            else:
-                if st.button("Load roll-call votes", key=f"votes_btn_{mid}"):
-                    with st.spinner("Fetching votes from Legistar..."):
-                        st.session_state.setdefault("votes_cache", {})[mid] = fetch_votes(mid)
-                ve = st.session_state.get("votes_cache", {}).get(mid)
-                if ve is not None:
-                    if not ve:
-                        st.caption("No individual votes returned for this bill.")
-                    for ev in ve:
-                        head = f"**{ev['date']} · {ev['body'] or 'Council'}** — {ev['action']}"
-                        if ev["result"]:
-                            head += f"  ·  **{ev['result']}**"
-                        st.markdown(head)
-                        if ev["tally"]:
-                            st.caption("  ·  ".join(f"{k}: {v}" for k, v in ev["tally"].items()))
-                        if ev["votes"]:
-                            st.dataframe(pd.DataFrame(ev["votes"]), hide_index=True,
-                                         use_container_width=True, height=min(420, 60 + 28 * len(ev["votes"])))
+        with st.expander("🗳️ Roll-call votes — who voted yes / no"):
+            st.caption("Pulls the recorded committee / Stated Meeting roll calls for this bill from Legistar. "
+                       "Most bills only have votes once they advance out of committee.")
+            if st.button("Load roll-call votes", key=f"votes_btn_{mid}"):
+                with st.spinner("Fetching votes from Legistar…"):
+                    st.session_state.setdefault("votes_cache", {})[mid] = fetch_votes(mid)
+            ve = st.session_state.get("votes_cache", {}).get(mid)
+            if ve is not None:
+                if not ve:
+                    st.caption("No roll-call votes are recorded for this bill yet.")
+                for ev in ve:
+                    head = f"**{ev['date']} · {ev['body'] or 'Council'}** — {ev['action']}"
+                    if ev["result"]:
+                        head += f"  ·  **{ev['result']}**"
+                    st.markdown(head)
+                    if ev["tally"]:
+                        st.caption("  ·  ".join(f"{k}: {v}" for k, v in ev["tally"].items()))
+                    if ev["votes"]:
+                        st.dataframe(pd.DataFrame(ev["votes"]), hide_index=True,
+                                     use_container_width=True, height=min(420, 60 + 28 * len(ev["votes"])))
         if at:
             st.markdown("**Attachments:**")
             for a in at:
@@ -1774,9 +1773,12 @@ with t_compare:
 def coalition_html(nodes, edges):
     import json as _json
     return """
+<div id="cstat" style="font:13px Arial;color:#9fb3d1;padding:4px 2px;">Drawing network…</div>
 <div id="net" style="height:560px;border-radius:12px;background:#0a0f1c;border:1px solid #1e2a44;"></div>
-<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 <script>
+function draw(){
+  if (typeof vis === 'undefined') { document.getElementById('cstat').innerHTML =
+     'Could not load the graph library (network blocked the CDN). The Strongest-partnerships table below still works.'; return; }
   var nodes = new vis.DataSet(%s);
   var edges = new vis.DataSet(%s);
   var net = new vis.Network(document.getElementById('net'), {nodes:nodes, edges:edges}, {
@@ -1785,9 +1787,18 @@ def coalition_html(nodes, edges):
            color:{background:'#2563eb', border:'#7dd3fc', highlight:{background:'#3b82f6', border:'#bae6fd'}}},
     edges:{color:{color:'#33507f', highlight:'#7dd3fc'}, scaling:{min:1,max:9},
            smooth:{type:'continuous'}, selectionWidth:2},
-    physics:{stabilization:{iterations:180}, barnesHut:{gravitationalConstant:-9000, springLength:135, springConstant:0.03}},
+    physics:{stabilization:{iterations:120, fit:true},
+             barnesHut:{gravitationalConstant:-9000, springLength:135, springConstant:0.03}},
     interaction:{hover:true, tooltipDelay:120}
   });
+  net.once('stabilizationIterationsDone', function(){ net.setOptions({physics:false}); 
+    document.getElementById('cstat').innerHTML = 'Drag dots to rearrange · hover to highlight · scroll to zoom.'; });
+}
+var s=document.createElement('script');
+s.src='https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js';
+s.onload=draw;
+s.onerror=function(){ document.getElementById('cstat').innerHTML='Could not load the graph library from the CDN. The table below still works.'; };
+document.head.appendChild(s);
 </script>""" % (_json.dumps(nodes), _json.dumps(edges))
 
 with t_net:
@@ -1814,6 +1825,56 @@ with t_net:
                 st.markdown("**Strongest partnerships (most bills co-sponsored):**")
                 st.dataframe(pd.DataFrame([{"Member A": p["from"], "Member B": p["to"], "Shared bills": p["value"]}
                                            for p in pairs]), hide_index=True, use_container_width=True)
+
+# ---------------- DISTRICT MAP ----------------
+def district_map_html():
+    return r"""
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<div id="mstat" style="font:13px Arial;color:#9fb3d1;padding:6px 2px;">Loading district boundaries…</div>
+<div id="map" style="height:560px;border-radius:12px;border:1px solid #1e2a44;"></div>
+<script>
+function go(){
+  if (typeof L === 'undefined'){ document.getElementById('mstat').innerHTML='Could not load the map library (CDN blocked).'; return; }
+  var SI = {49:'#ef4444',50:'#f59e0b',51:'#22c55e'};
+  var NAME = {49:'CM Hanks (D-49)',50:'CM Carr (D-50)',51:'CM Morano (D-51)'};
+  var map = L.map('map',{scrollWheelZoom:true}).setView([40.58,-74.13],11);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    {attribution:'&copy; OpenStreetMap &copy; CARTO', subdomains:'abcd', maxZoom:19}).addTo(map);
+  var SOURCES = [
+    'https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_City_Council_Districts/FeatureServer/0/query?where=1%3D1&outFields=*&outSR=4326&f=geojson',
+    'https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_City_Council_Districts_Water_Included/FeatureServer/0/query?where=1%3D1&outFields=*&outSR=4326&f=geojson',
+    'https://data.cityofnewyork.us/api/geospatial/6dxp-cfic?method=export&format=GeoJSON'
+  ];
+  function dnum(p){ if(!p) return null; var ks=['CounDist','coun_dist','council_di','COUNDIST','District','district','councildist']; for(var i=0;i<ks.length;i++){ if(p[ks[i]]!=null) return parseInt(p[ks[i]]); } return null; }
+  function style(f){ var d=dnum(f.properties); var c=SI[d];
+    return {color:c?'#ffffff':'#39507f', weight:c?2.4:0.7, fillColor:c||'#1e2a44', fillOpacity:c?0.55:0.22}; }
+  function each(f,layer){ var d=dnum(f.properties);
+    layer.bindPopup('<b>Council District '+(d||'?')+'</b>'+(SI[d]?'<br>'+NAME[d]:''));
+    layer.on('mouseover',function(){layer.setStyle({weight:3,fillOpacity:0.6});});
+    layer.on('mouseout',function(){layer.setStyle(style(f));}); }
+  function attempt(i){
+    if(i>=SOURCES.length){ document.getElementById('mstat').innerHTML='Could not load live district boundaries right now (network or dataset URL). Everything else in the app is unaffected — tell me and I can point this at a specific dataset.'; return; }
+    fetch(SOURCES[i]).then(function(r){ if(!r.ok) throw 0; return r.json(); }).then(function(g){
+      var layer=L.geoJSON(g,{style:style,onEachFeature:each}).addTo(map);
+      try{ map.fitBounds(layer.getBounds(),{padding:[12,12]}); }catch(e){}
+      document.getElementById('mstat').innerHTML='NYC City Council districts — <b style="color:#ef4444">D-49 Hanks</b>, <b style="color:#f59e0b">D-50 Carr</b>, <b style="color:#22c55e">D-51 Morano</b> highlighted. Click any district.';
+    }).catch(function(e){ attempt(i+1); });
+  }
+  attempt(0);
+}
+var ls=document.createElement('script');
+ls.src='https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+ls.onload=go; ls.onerror=function(){ document.getElementById('mstat').innerHTML='Could not load the map library from the CDN.'; };
+document.head.appendChild(ls);
+</script>"""
+
+with t_map:
+    st.subheader("🗺️ NYC City Council districts")
+    st.caption("The 51 Council districts, with the Staten Island delegation highlighted — D-49 (Hanks), D-50 (Carr), "
+               "D-51 (Morano). Click any district for its number. Boundaries load live from NYC Open Data in your browser.")
+    st.components.v1.html(district_map_html(), height=620)
+    st.caption("Reference map. If the boundaries don't appear, your network may be blocking the data source — let me "
+               "know and I'll wire it to a specific dataset URL.")
 
 # ---------------- OVERVIEW ----------------
 with t_over:

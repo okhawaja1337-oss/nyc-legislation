@@ -12,7 +12,7 @@ Optionally adds AI-drafted impact bullets (cached so re-runs only pay for new/ch
 CLI runs ONE profile. For multiple scoped workbooks on a schedule, use run_sync.py + config.json.
 
   python3 legistar_sync.py --file "Int 0225-2026" --enrich --out int225.xlsx
-  python3 legistar_sync.py --since 2024-01-01 --sponsor Hanks --enrich --text --impact ai --out hanks.xlsx
+  python3 legistar_sync.py --since 2024-01-01 --sponsor "<member last name>" --enrich --text --impact ai --out member.xlsx
 """
 
 import argparse, hashlib, json, os, re, sqlite3, sys, time
@@ -342,7 +342,6 @@ def normalize_matter(m, sponsors=None, histories=None, attachments=None):
         "Law #": m.get("MatterEnactmentNumber", ""),
         "Sponsors (#)": len(names) if sp is not None else "",
         "Prime Sponsor": prime,
-        "Hanks?": "Y" if any("Hanks" in n for n in names) else ("" if sp is not None else "?"),
         "Latest Action": (latest or {}).get("MatterHistoryActionName", ""),
         "Latest Action Date": _date((latest or {}).get("MatterHistoryActionDate")),
         "Attachments (#)": len(attachments) if attachments is not None else "",
@@ -356,43 +355,93 @@ def normalize_matter(m, sponsors=None, histories=None, attachments=None):
 
 
 # ============================================================================
-# ANALYSIS LAYER (1) — heuristic keyword tagging (free, transparent)
+# ANALYSIS LAYER (1) — heuristic policy-topic tagging, citywide (free, transparent)
 # ============================================================================
-PILLARS = {
-    "Arts & Culture": ["arts", "cultural", "museum", "artist", "theater", "library", "heritage", "public art", "DCLA", "humanities"],
-    "Neighborhood Dev": ["zoning", "land use", "rezon", "ULURP", "housing", "landmark", "preservation", "neighborhood", "construction", "building", "tenant"],
-    "Economic Dev": ["economic", "small business", "commercial", "workforce", "employment", "job", "tourism", "EDC", "tax credit", "women-owned"],
-    "Public Safety/Crisis": ["NYPD", "police", "FDNY", "fire", "emergency", "crime", "traffic", "tow", "911", "B-HEARD", "shelter", "flood", "storm"],
-    "Health & Hospitals": ["health", "hospital", "H+H", "clinic", "medical", "DOHMH", "mental health", "substance", "care", "wellness"],
+TOPICS = {
+    "Housing & Buildings": ["housing", "affordable housing", "tenant", "landlord", "rent", "rental", "rent stabilization",
+        "HPD", "construction", "NYCHA", "public housing", "homeownership", "mortgage", "foreclosure", "lead paint",
+        "eviction", "SRO", "basement apartment", "certificate of occupancy", "building code"],
+    "Land Use & Zoning": ["zoning", "rezoning", "rezone", "land use", "ULURP", "landmark", "preservation",
+        "city planning", "special district", "waterfront", "variance", "comprehensive plan", "FAR"],
+    "Transportation & Streets": ["transportation", "DOT", "bus", "buses", "bus lane", "subway", "MTA", "bike", "bicycle",
+        "e-bike", "scooter", "pedestrian", "traffic", "parking", "ferry", "speed limit", "vision zero",
+        "congestion pricing", "sidewalk", "crosswalk", "taxi", "for-hire vehicle", "bus stop"],
+    "Public Safety & Policing": ["NYPD", "police", "policing", "crime", "public safety", "gun", "guns", "firearm",
+        "surveillance", "body camera", "precinct", "hate crime", "domestic violence", "shooting", "ghost gun"],
+    "Fire & Emergency Management": ["FDNY", "fire", "EMS", "emergency", "911", "evacuation", "disaster",
+        "emergency management", "first responder"],
+    "Criminal Justice & Courts": ["jail", "Rikers", "incarceration", "correction", "DOC", "reentry", "bail",
+        "district attorney", "court", "justice system", "parole", "probation", "solitary", "detainee"],
+    "Health & Mental Health": ["health", "hospital", "H+H", "clinic", "medical", "DOHMH", "mental health", "substance use",
+        "overdose", "opioid", "disease", "vaccine", "maternal", "reproductive", "public health", "naloxone",
+        "lead poisoning"],
+    "Social Services & Homelessness": ["homeless", "shelter", "DHS", "HRA", "public assistance", "SNAP", "benefits",
+        "food insecurity", "hunger", "poverty", "cash assistance", "general welfare", "social services", "food pantry"],
+    "Education & Schools": ["education", "school", "DOE", "student", "teacher", "classroom", "curriculum", "CUNY",
+        "college", "pre-k", "3-K", "special education", "charter school", "literacy", "tutoring"],
+    "Children, Youth & Families": ["youth", "children", "ACS", "child welfare", "foster care", "daycare", "childcare",
+        "after-school", "summer youth", "family", "juvenile", "early childhood"],
+    "Aging & Older Adults": ["aging", "senior", "older adult", "DFTA", "elderly", "NORC", "aging in place", "senior center"],
+    "Immigration": ["immigrant", "immigration", "MOIA", "asylum", "refugee", "undocumented", "IDNYC", "language access",
+        "naturalization", "newcomer"],
+    "Economic & Small Business": ["economic development", "EDC", "small business", "commercial", "workforce",
+        "employment", "jobs", "entrepreneur", "MWBE", "minority-owned", "women-owned", "industrial", "manufacturing",
+        "storefront", "tourism"],
+    "Labor & Workers": ["labor", "worker", "wage", "minimum wage", "paid leave", "sick leave", "union",
+        "collective bargaining", "gig worker", "freelance", "prevailing wage", "workplace safety", "delivery worker"],
+    "Consumer & Worker Protection": ["consumer", "DCWP", "license", "debt", "predatory", "deceptive", "price gouging",
+        "tenant harassment", "worker protection", "licensing"],
+    "Environment & Sanitation": ["environment", "climate", "emissions", "sustainability", "resiliency", "flood", "storm",
+        "sewer", "water", "air quality", "DEP", "sanitation", "DSNY", "waste", "recycling", "composting", "rats",
+        "rodent", "litter", "local law 97", "green infrastructure", "stormwater", "solar"],
+    "Parks & Open Space": ["parks", "recreation", "playground", "open space", "DPR", "trees", "tree planting",
+        "urban forest", "garden", "greenway", "waterfront access", "park land"],
+    "Arts, Culture & Libraries": ["cultural", "museum", "artist", "theater", "library", "libraries", "heritage",
+        "public art", "DCLA", "humanities", "historic", "gallery", "arts education"],
+    "Technology & Privacy": ["technology", "broadband", "internet", "data privacy", "privacy", "cybersecurity", "OTI",
+        "algorithm", "artificial intelligence", "digital", "open data", "smart city"],
+    "Civil Rights & Equity": ["civil rights", "discrimination", "human rights", "CCHR", "LGBTQ", "disability",
+        "accessibility", "gender", "racial equity", "bias", "equity", "reproductive rights"],
+    "Veterans": ["veteran", "veterans", "DVS", "military", "armed forces", "servicemember"],
+    "Government & Elections": ["election", "elections", "voting", "voter", "ballot", "campaign finance", "ethics", "COIB",
+        "transparency", "FOIL", "open meeting", "charter", "redistricting", "governmental operations", "lobbying",
+        "board of elections", "ranked choice"],
+    "Budget, Finance & Taxes": ["budget", "fiscal", "tax", "taxes", "revenue", "appropriation", "OMB", "comptroller",
+        "audit", "property tax", "tax exemption", "tax abatement", "capital budget"],
+    "Contracts & Procurement": ["contract", "procurement", "MOCS", "vendor", "RFP", "prompt payment",
+        "nonprofit contract", "subcontract"],
 }
-SI_TERMS = ["staten island", "north shore", "verrazzano", "district 49", "st. george", "stapleton",
-            "port richmond", "tompkinsville", "ferry", "tow pound", "borough of richmond"]
+PILLARS = TOPICS  # backward-compat alias
 BOROUGHS = ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island"]
+
+
+def _kw_hit(blob, k):
+    k = k.lower()
+    if re.fullmatch(r"[a-z0-9 ]+", k):  # plain words/phrases → word-boundary match, optional plural
+        return re.search(r"\b" + re.escape(k) + r"(?:s|es)?\b", blob) is not None
+    return k in blob  # has punctuation (H+H, 3-K, pre-k, e-bike) → substring
 
 
 def keyword_tags(row, text=""):
     blob = " ".join([row.get("Title", ""), row.get("Name", ""), text]).lower()
-    pillars = [p for p, kws in PILLARS.items() if any(k.lower() in blob for k in kws)]
-    si = [t for t in SI_TERMS if t in blob]
+    topics = [t for t, kws in TOPICS.items() if any(_kw_hit(blob, k) for k in kws)]
     bor = [b for b in BOROUGHS if b.lower() in blob]
-    return {"Pillar Tags": "; ".join(pillars),
-            "SI/D-49 Signal": f"{len(si)} ({', '.join(si)})" if si else "0",
+    return {"Topic Tags": "; ".join(topics),
             "Boroughs Named": "; ".join(bor) or "(citywide / none named)"}
 
 
 # ============================================================================
 # ANALYSIS LAYER (2) — AI-drafted impact bullets (Anthropic API, cached)
 # ============================================================================
-PROMPT = """You are a legislative analyst for NYC Council Member Kamillah Hanks (District 49, \
-North Shore Staten Island; majority whip). Given a NYC Council bill's file number, title, and text, \
-write a tight impact read. Ground every statement ONLY in the provided text; do not invent specifics.
+PROMPT = """You are a nonpartisan legislative analyst for the New York City Council. Given a NYC Council \
+bill's file number, title, and text, write a tight, citywide impact read. Ground every statement ONLY in the \
+provided text; do not invent specifics. Treat every district and Council Member equally.
 
-Return ONLY a JSON object with keys "purpose", "affects", "d49":
+Return ONLY a JSON object with keys "purpose", "affects", "local":
 - purpose: <=25 words, plain language, what the bill actually does.
 - affects: <=30 words, who/what across the city it touches and how.
-- d49: <=35 words, the Staten Island / District 49 angle tied to CM Hanks's pillars (Arts & Culture, \
-Neighborhood Development, Economic Development, Public Safety/Crisis, Health & Hospitals, SI parity/independence). \
-If the bill has little direct D-49 nexus, say so plainly rather than stretching.
+- local: <=35 words, where the bill's effects concentrate geographically (which boroughs/neighborhoods/districts, \
+if any), or "citywide" if it applies uniformly. Be specific only where the text supports it; do not stretch.
 
 File: {file}
 Type: {type}
@@ -465,7 +514,7 @@ QUERY_PLAN_PROMPT = """Convert the user's question about NYC City Council bills 
 Return ONLY a JSON object (no prose, no markdown fences) with these keys:
 - "intent": one of "filter" (list/find bills), "compare" (compare named bills), "explain" (explain one bill), "answer" (general question about the loaded set).
 - "bill_refs": array of bill identifiers the user names, e.g. ["220","Int 0419-2026"]. Empty if none.
-- "filters": object; include only keys that apply: "keyword" (free text), "topic" (one of: Arts & Culture, Neighborhood Dev, Economic Dev, Public Safety/Crisis, Health & Hospitals), "type" (e.g. Introduction, Resolution, Land Use Application), "status" (e.g. Committee, Enacted), "borough" (Manhattan/Brooklyn/Queens/Bronx/Staten Island), "sponsor" (a member name), "min_sponsors" (integer).
+- "filters": object; include only keys that apply: "keyword" (free text), "topic" (a policy area keyword such as housing, land use, transportation, public safety, fire, criminal justice, health, social services, education, youth, aging, immigration, economic development, labor, consumer protection, environment, sanitation, parks, arts, technology, civil rights, veterans, elections, budget, or contracts), "type" (e.g. Introduction, Resolution, Land Use Application), "status" (e.g. Committee, Enacted), "borough" (Manhattan/Brooklyn/Queens/Bronx/Staten Island), "sponsor" (a member name), "min_sponsors" (integer).
 - "needs_detail": true if answering needs the full text/sponsors of the named bills (comparisons and explanations do).
 
 User question: {q}
@@ -594,7 +643,7 @@ def parse_bullets(txt):
     except Exception:
         m = re.search(r"\{.*\}", s, re.DOTALL)
         d = json.loads(m.group(0)) if m else {}
-    return {"purpose": d.get("purpose", ""), "affects": d.get("affects", ""), "d49": d.get("d49", "")}
+    return {"purpose": d.get("purpose", ""), "affects": d.get("affects", ""), "local": d.get("local", d.get("d49", ""))}
 
 
 # ============================================================================
@@ -706,20 +755,20 @@ def build_workbook(bundle, path):
     wb = Workbook(); wb.remove(wb.active)
 
     cols = ["File", "Type", "Title", "Status", "Committee/Body", "Intro Date", "Latest Action",
-            "Latest Action Date", "Sponsors (#)", "Prime Sponsor", "Hanks?", "Law #",
+            "Latest Action Date", "Sponsors (#)", "Prime Sponsor", "Law #",
             "Last Modified (UTC)", "MatterId", "Web Link"]
     add_kw = impact_mode in ("keyword", "ai")
     if add_kw:
-        cols += ["Pillar Tags", "SI/D-49 Signal", "Boroughs Named"]
+        cols += ["Topic Tags", "Boroughs Named"]
     body = []
     for r in rows:
-        line = [r.get(c, "") for c in cols if c not in ("Pillar Tags", "SI/D-49 Signal", "Boroughs Named")]
+        line = [r.get(c, "") for c in cols if c not in ("Topic Tags", "Boroughs Named")]
         if add_kw:
             t = keyword_tags(r, (text_map.get(r["MatterId"], "") or "")[:4000])
-            line += [t["Pillar Tags"], t["SI/D-49 Signal"], t["Boroughs Named"]]
+            line += [t["Topic Tags"], t["Boroughs Named"]]
         body.append(line)
     _sheet(wb, "Matters", cols, body,
-           widths=[16, 15, 58, 15, 24, 11, 26, 12, 11, 22, 7, 9, 22, 10, 50] + ([22, 26, 22] if add_kw else []))
+           widths=[16, 15, 58, 15, 24, 11, 26, 12, 11, 22, 9, 22, 10, 50] + ([24, 22] if add_kw else []))
 
     if impact_mode == "ai":
         ai_rows = []
@@ -727,9 +776,9 @@ def build_workbook(bundle, path):
             b = ai_map.get(r["MatterId"])
             if b:
                 ai_rows.append([r["File"], r["Title"], b.get("purpose", ""), b.get("affects", ""),
-                                b.get("d49", ""), run_info.get("AI model", "")])
+                                b.get("local", b.get("d49", "")), run_info.get("AI model", "")])
         _sheet(wb, "Impact (AI-drafted)",
-               ["File", "Title", "Purpose", "Who it affects", "D-49 angle", "Model"],
+               ["File", "Title", "Purpose", "Who it affects", "Local impact", "Model"],
                ai_rows, widths=[16, 46, 40, 40, 44, 22], fill=AI_FILL, font=AI_FONT)
 
     sp_rows = []
@@ -888,7 +937,7 @@ def assemble(client, ai, snap, old, profile):
                 b = ai.draft(r, text_map.get(mid, ""))
                 snap.ai_put(mid, th, ai.model, b); ai_map[mid] = b; ai_drafted += 1
             except Exception as e:
-                ai_map[mid] = {"purpose": f"[AI error: {e}]", "affects": "", "d49": ""}
+                ai_map[mid] = {"purpose": f"[AI error: {e}]", "affects": "", "local": ""}
 
     changes = diff(old, rows) if old else []
     run_info = {
@@ -947,23 +996,20 @@ def _status_group(s):
 
 def overview_stats(rows):
     g = collections.Counter(_status_group(r.get("Status", "")) for r in rows)
-    prime = sum(1 for r in rows if r.get("Prime Sponsor") == "Kamillah Hanks")
-    hanks = sum(1 for r in rows if r.get("Hanks?") == "Y")
-    d49 = sum(1 for r in rows if not str(r.get("SI/D-49 Signal", "0")).startswith("0"))
-    return {"total": len(rows), "prime": prime, "hanks_on": hanks, "d49": d49,
+    return {"total": len(rows),
             "alive": g.get("Alive", 0), "passed": g.get("Passed", 0), "dead": g.get("Dead/Filed", 0)}
 
 def pillar_counts(rows):
     c = collections.Counter()
     for r in rows:
-        for t in (r.get("Pillar Tags") or "").split("; "):
+        for t in (r.get("Topic Tags") or r.get("Topic tags") or "").split("; "):
             if t: c[t] += 1
     return dict(c)
 
 def status_counts(rows):
     return dict(collections.Counter(_status_group(r.get("Status", "")) for r in rows))
 
-def coalition_counts(rows, member="Hanks", top=15):
+def coalition_counts(rows, member, top=15):
     c = collections.Counter()
     for r in rows:
         names = r.get("_sponsor_names", [])
@@ -983,7 +1029,7 @@ def parse_file(fileno):
 def _blob(r):
     parts = [str(r.get(k, "") or "") for k in
              ("File", "Title", "Name", "Type", "Status", "Committee/Body", "Prime Sponsor",
-              "Pillar Tags", "SI/D-49 Signal")]
+              "Topic Tags")]
     parts += list(r.get("_sponsor_names", []))
     return " ".join(parts).lower()
 
@@ -1055,6 +1101,22 @@ def coalition_edges(rows, top_members=28, min_weight=2):
     edges = [{"from": a, "to": b, "value": w}
              for (a, b), w in pair.items() if a in top and b in top and w >= min_weight]
     return nodes, edges
+
+
+def coalition_matrix(rows, top_members=18):
+    """Symmetric co-sponsorship counts among the most active members.
+    Returns (members_ordered_by_activity, degree_dict, pair_count_dict)."""
+    import collections, itertools
+    deg = collections.Counter()
+    pair = collections.Counter()
+    for r in rows:
+        names = sorted({n.strip() for n in (r.get("_sponsor_names") or []) if n and n.strip()})
+        for n in names:
+            deg[n] += 1
+        for a, b in itertools.combinations(names, 2):
+            pair[(a, b)] += 1
+    members = [m for m, _ in deg.most_common(top_members)]
+    return members, dict(deg), dict(pair)
 
 import streamlit as st
 import pandas as pd
@@ -1186,7 +1248,7 @@ with st.expander("⚙️  Data controls — choose what to load, then press Load
     include_sponsors = a3.checkbox("Include sponsors (slower)", value=False,
         help="On = pull who signed each bill so the list is searchable by member. Off loads much faster.")
     if scope == "By a Council Member":
-        member_name = st.selectbox("Council Member", _dir, key="cp_member") if _dir else st.text_input("Council Member", "Hanks", key="cp_member_txt")
+        member_name = st.selectbox("Council Member", _dir, key="cp_member") if _dir else st.text_input("Council Member (last name)", "", key="cp_member_txt")
     else:
         member_name = ""
     if scope == "One specific bill":
@@ -1209,7 +1271,7 @@ with st.expander("⚙️  Data controls — choose what to load, then press Load
 def _tag_rows(rows, text_map=None):
     for r in rows:
         t = keyword_tags(r, ((text_map or {}).get(r["MatterId"], "") or "")[:4000])
-        r["Topic tags"] = t["Pillar Tags"]; r["Boroughs named"] = t["Boroughs Named"]; r["Pillar Tags"] = t["Pillar Tags"]
+        r["Topic tags"] = t["Topic Tags"]; r["Boroughs named"] = t["Boroughs Named"]; r["Topic Tags"] = t["Topic Tags"]
     return rows
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -1301,7 +1363,7 @@ elif load:
 
 t_list, t_ask, t_hear, t_detail, t_members, t_dossier, t_compare, t_net, t_map, t_over, t_changes, t_about = st.tabs(
     ["📋 Legislation list", "💬 Ask", "📅 Hearings", "📄 Bill detail", "👤 Members", "📕 Dossier", "⚖️ Compare",
-     "🕸️ Coalitions", "🗺️ District map", "📊 Overview", "🔔 What changed", "ℹ️ About"])
+     "🤝 Coalitions", "🗺️ District map", "📊 Overview", "🔔 What changed", "ℹ️ About"])
 
 def need_data():
     st.info("Load data from the ⚙️ controls panel above first (this tab uses that data).")
@@ -1371,7 +1433,7 @@ with t_list:
         has_sp = any(r.get("_sponsor_names") for r in f)
         disp = []
         for r in f:
-            d = {k: v for k, v in r.items() if not k.startswith("_") and k != "Pillar Tags"}
+            d = {k: v for k, v in r.items() if not k.startswith("_") and k != "Topic Tags"}
             if has_sp: d["All sponsors"] = "; ".join(r.get("_sponsor_names", []))
             disp.append(d)
         if disp:
@@ -1641,7 +1703,7 @@ with t_detail:
             st.markdown("**AI impact read (analysis, not official):**")
             st.write(f"- **Purpose:** {ab.get('purpose','')}")
             st.write(f"- **Who it affects:** {ab.get('affects','')}")
-            st.write(f"- **District angle:** {ab.get('d49','')}")
+            st.write(f"- **Where it lands:** {ab.get('local', ab.get('d49',''))}")
         if tx:
             with st.expander("Full bill text"):
                 st.text(tx)
@@ -1656,7 +1718,7 @@ with t_members:
         st.info("Sponsor data isn't loaded. Turn on **Include sponsors** in the ⚙️ controls panel, or use the "
                 "**By a Council Member** scope, then reload.")
     else:
-        mem = st.text_input("Council Member name (e.g., Hanks, Carr, Morano, Salaam)")
+        mem = st.text_input("Council Member last name")
         if mem.strip():
             mb = member_bills(rows, mem); prime = member_prime_count(mb, mem)
             c = st.columns(3)
@@ -1664,7 +1726,7 @@ with t_members:
             pc = pillar_counts(mb)
             if pc:
                 st.subheader("Their bills by policy topic"); st.bar_chart(pd.Series(pc).sort_values(ascending=False))
-            df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_") and k != "Pillar Tags"} for r in mb])
+            df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_") and k != "Topic Tags"} for r in mb])
             if not df.empty:
                 st.dataframe(df, use_container_width=True, height=340,
                     column_config={"Web Link": st.column_config.LinkColumn("Legistar", display_text="Open")})
@@ -1680,7 +1742,7 @@ with t_dossier:
                "Loads on its own.")
     members = get_directory()
     if not members:
-        manual = st.text_input("Directory unavailable — type a member's last name", "Hanks", key="dossier_manual")
+        manual = st.text_input("Directory unavailable — type a member's last name", "", key="dossier_manual")
         members = [manual.strip()] if manual.strip() else []
     who = st.selectbox("Council Member", members, key="dossier_member") if members else None
     run_ai = st.checkbox("Include AI analysis (uses the Anthropic key in the controls panel)", value=bool(anthropic_key.strip()))
@@ -1748,7 +1810,7 @@ with t_dossier:
             st.info("Add your Anthropic key in the ⚙️ controls panel to include the AI write-up.")
         st.markdown("### Prime-sponsored bills")
         pm = [r for r in mb if member.lower() in (r.get("Prime Sponsor", "") or "").lower()]
-        df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_") and k != "Pillar Tags"} for r in pm])
+        df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_") and k != "Topic Tags"} for r in pm])
         if not df.empty:
             st.dataframe(df, use_container_width=True, height=320,
                 column_config={"Web Link": st.column_config.LinkColumn("Legistar", display_text="Open")})
@@ -1759,7 +1821,7 @@ with t_compare:
         st.info("Turn on **Include sponsors** (or use a member scope) so two members can be compared.")
     else:
         c = st.columns(2)
-        a = c[0].text_input("Member A", "Hanks"); b = c[1].text_input("Member B", "Carr")
+        a = c[0].text_input("Member A (last name)", ""); b = c[1].text_input("Member B (last name)", "")
         if a.strip() and b.strip():
             ma, mb = member_bills(rows, a), member_bills(rows, b)
             comp = pd.DataFrame({"Member": [a, b], "Bills (on)": [len(ma), len(mb)],
@@ -1804,40 +1866,98 @@ document.head.appendChild(s);
 with t_net:
     if not bundle or not any(r.get("_sponsor_names") for r in rows):
         st.info("Turn on **Include sponsors** in the ⚙️ controls panel (or load a year of all legislation with sponsors) "
-                "so the co-sponsorship network can be drawn.")
+                "so co-sponsorship coalitions can be drawn.")
     else:
-        st.subheader("🕸️ Co-sponsorship coalitions")
-        st.caption("Each dot is a Council Member; bigger dots sponsor more of the loaded bills. A line means two members "
-                   "co-sponsored bills together; thicker lines = more shared bills. Drag dots, hover, and zoom.")
-        cc = st.columns(2)
-        topn = cc[0].slider("Members to show (by activity)", 8, 51, 28, key="net_top")
-        minw = cc[1].slider("Min. shared bills for a line", 1, 10, 2, key="net_min")
-        nodes, edges = coalition_edges(rows, top_members=topn, min_weight=minw)
-        if not nodes:
+        st.subheader("🤝 Co-sponsorship coalitions")
+        st.caption("Who works with whom across the loaded bills. The grid below is the clearest view: each cell shows how "
+                   "many bills two members co-sponsored — darker means more shared bills.")
+        topn = st.slider("Members to include (most active first)", 6, 40, 16, key="net_top")
+        members, deg, pair = coalition_matrix(rows, top_members=topn)
+        if not members:
             st.warning("No sponsor data in the loaded set yet.")
         else:
-            st.components.v1.html(coalition_html(nodes, edges), height=580)
-            st.caption(f"{len(nodes)} members · {len(edges)} co-sponsorship links shown. "
-                       "Tighten 'min. shared bills' if it looks crowded.")
-            # strongest partnerships table
-            pairs = sorted(edges, key=lambda e: e["value"], reverse=True)[:12]
+            # last-name labels, disambiguated if needed
+            def _short(n):
+                return n.split()[-1] if n.split() else n
+            shorts, seen = [], {}
+            for m in members:
+                lbl = _short(m); seen[lbl] = seen.get(lbl, 0) + 1
+            for m in members:
+                lbl = _short(m)
+                shorts.append(m if seen[lbl] > 1 else lbl)
+            M = pd.DataFrame(0, index=members, columns=members)
+            for (a, b), w in pair.items():
+                if a in M.index and b in M.columns:
+                    M.loc[a, b] = w; M.loc[b, a] = w
+            Ms = M.copy(); Ms.index = shorts; Ms.columns = shorts
+            mx = max(1, int(M.values.max()))
+
+            def _cell(v):
+                if not v:
+                    return "background-color:#0a0f1c;color:#26344d"
+                t = v / mx
+                rr = int(15 + t * (59 - 15)); gg = int(26 + t * (130 - 26)); bb = int(50 + t * (246 - 50))
+                return f"background-color:rgb({rr},{gg},{bb});color:#eaf1fb"
+            styled = Ms.style
+            styled = (styled.map(_cell) if hasattr(styled, "map") else styled.applymap(_cell))
+            styled = styled.format(lambda v: "" if not v else int(v))
+            st.dataframe(styled, use_container_width=True, height=min(640, 80 + 30 * len(members)))
+            st.caption(f"Darkest cell = {mx} shared bills. Most-active member here: **{_short(members[0])}** "
+                       f"({deg[members[0]]} bills).")
+
+            pairs = sorted(({"a": a, "b": b, "w": w} for (a, b), w in pair.items()
+                            if a in members and b in members), key=lambda x: x["w"], reverse=True)[:15]
             if pairs:
-                st.markdown("**Strongest partnerships (most bills co-sponsored):**")
-                st.dataframe(pd.DataFrame([{"Member A": p["from"], "Member B": p["to"], "Shared bills": p["value"]}
+                st.markdown("**Strongest partnerships (most bills co-sponsored together):**")
+                st.dataframe(pd.DataFrame([{"Member A": p["a"], "Member B": p["b"], "Shared bills": p["w"]}
                                            for p in pairs]), hide_index=True, use_container_width=True)
 
+            st.markdown("**💡 Why do these coalitions form?**")
+            if not anthropic_key.strip():
+                st.caption("Add your Anthropic key in the ⚙️ controls panel to get an explanation of the drivers "
+                           "(committees, borough delegations, party, caucuses, leadership).")
+            elif st.button("Explain the patterns", key="why_coal"):
+                with st.spinner("Analyzing the coalition structure…"):
+                    try:
+                        evidence = {
+                            "top_partnerships": [{"a": p["a"], "b": p["b"], "shared_bills": p["w"]} for p in pairs],
+                            "most_active_members": [{"member": m, "bills_sponsored": deg[m]} for m in members[:topn]],
+                            "session_scope": f"{len(rows)} bills loaded for {loaded_year}",
+                        }
+                        q = ("Explain why these co-sponsorship coalitions appear in the New York City Council. "
+                             "Consider shared committee membership, borough delegations, party (most members are Democrats; "
+                             "note the Republican minority), ideological caucuses such as the Progressive Caucus, and "
+                             "leadership/whip dynamics. Use the partnership data as evidence, name specific members, and "
+                             "search the web for current committee assignments or caucus rosters where that sharpens the "
+                             "explanation. Note this reflects only the loaded bills, not the full session.")
+                        ans = AIImpact("claude-haiku-4-5-20251001", api_key=anthropic_key.strip()).chat_answer(q, evidence, allow_web=True)
+                        st.session_state["coal_why"] = ans
+                    except Exception as e:
+                        st.session_state["coal_why"] = f"Sorry — {type(e).__name__}: {e}"
+            if st.session_state.get("coal_why"):
+                st.markdown(st.session_state["coal_why"])
+                st.caption("Interpretive analysis based on the loaded data and general knowledge of the Council — verify "
+                           "specifics against official committee and caucus rosters.")
+
+            with st.expander("🕸️ Show the network graph instead"):
+                minw = st.slider("Min. shared bills for a line", 1, 10, 2, key="net_min")
+                nodes, edges = coalition_edges(rows, top_members=topn, min_weight=minw)
+                if nodes:
+                    st.components.v1.html(coalition_html(nodes, edges), height=580)
+                    st.caption(f"{len(nodes)} members · {len(edges)} links. Raise the minimum if it looks crowded.")
+
 # ---------------- DISTRICT MAP ----------------
-def district_map_html():
+def district_map_html(highlight=None):
+    sel = "null" if not highlight else str(int(highlight))
     return r"""
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
 <div id="mstat" style="font:13px Arial;color:#9fb3d1;padding:6px 2px;">Loading district boundaries…</div>
 <div id="map" style="height:560px;border-radius:12px;border:1px solid #1e2a44;"></div>
 <script>
+var SEL = __SEL__;
 function go(){
   if (typeof L === 'undefined'){ document.getElementById('mstat').innerHTML='Could not load the map library (CDN blocked).'; return; }
-  var SI = {49:'#ef4444',50:'#f59e0b',51:'#22c55e'};
-  var NAME = {49:'CM Hanks (D-49)',50:'CM Carr (D-50)',51:'CM Morano (D-51)'};
-  var map = L.map('map',{scrollWheelZoom:true}).setView([40.58,-74.13],11);
+  var map = L.map('map',{scrollWheelZoom:true}).setView([40.70,-73.94],10);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
     {attribution:'&copy; OpenStreetMap &copy; CARTO', subdomains:'abcd', maxZoom:19}).addTo(map);
   var SOURCES = [
@@ -1846,18 +1966,22 @@ function go(){
     'https://data.cityofnewyork.us/api/geospatial/6dxp-cfic?method=export&format=GeoJSON'
   ];
   function dnum(p){ if(!p) return null; var ks=['CounDist','coun_dist','council_di','COUNDIST','District','district','councildist']; for(var i=0;i<ks.length;i++){ if(p[ks[i]]!=null) return parseInt(p[ks[i]]); } return null; }
-  function style(f){ var d=dnum(f.properties); var c=SI[d];
-    return {color:c?'#ffffff':'#39507f', weight:c?2.4:0.7, fillColor:c||'#1e2a44', fillOpacity:c?0.55:0.22}; }
+  function style(f){ var d=dnum(f.properties); var on=(SEL!==null && d===SEL);
+    return {color: on?'#ffffff':'#39507f', weight: on?2.6:0.7, fillColor: on?'#2563eb':'#1e2a44', fillOpacity: on?0.6:0.22}; }
+  var selLayer=null;
   function each(f,layer){ var d=dnum(f.properties);
-    layer.bindPopup('<b>Council District '+(d||'?')+'</b>'+(SI[d]?'<br>'+NAME[d]:''));
-    layer.on('mouseover',function(){layer.setStyle({weight:3,fillOpacity:0.6});});
+    layer.bindPopup('<b>Council District '+(d||'?')+'</b>');
+    if(SEL!==null && d===SEL) selLayer=layer;
+    layer.on('mouseover',function(){layer.setStyle({weight:3,fillOpacity:0.55});});
     layer.on('mouseout',function(){layer.setStyle(style(f));}); }
   function attempt(i){
     if(i>=SOURCES.length){ document.getElementById('mstat').innerHTML='Could not load live district boundaries right now (network or dataset URL). Everything else in the app is unaffected — tell me and I can point this at a specific dataset.'; return; }
     fetch(SOURCES[i]).then(function(r){ if(!r.ok) throw 0; return r.json(); }).then(function(g){
       var layer=L.geoJSON(g,{style:style,onEachFeature:each}).addTo(map);
-      try{ map.fitBounds(layer.getBounds(),{padding:[12,12]}); }catch(e){}
-      document.getElementById('mstat').innerHTML='NYC City Council districts — <b style="color:#ef4444">D-49 Hanks</b>, <b style="color:#f59e0b">D-50 Carr</b>, <b style="color:#22c55e">D-51 Morano</b> highlighted. Click any district.';
+      try{ if(selLayer){ map.fitBounds(selLayer.getBounds(),{padding:[20,20]}); } else { map.fitBounds(layer.getBounds(),{padding:[12,12]}); } }catch(e){}
+      document.getElementById('mstat').innerHTML = (SEL!==null)
+        ? ('NYC City Council districts — <b style="color:#3b82f6">District '+SEL+'</b> highlighted. Click any district for its number.')
+        : 'All 51 NYC City Council districts. Click any district for its number, or pick one above to highlight it.';
     }).catch(function(e){ attempt(i+1); });
   }
   attempt(0);
@@ -1866,15 +1990,17 @@ var ls=document.createElement('script');
 ls.src='https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
 ls.onload=go; ls.onerror=function(){ document.getElementById('mstat').innerHTML='Could not load the map library from the CDN.'; };
 document.head.appendChild(ls);
-</script>"""
+</script>""".replace("__SEL__", sel)
 
 with t_map:
     st.subheader("🗺️ NYC City Council districts")
-    st.caption("The 51 Council districts, with the Staten Island delegation highlighted — D-49 (Hanks), D-50 (Carr), "
-               "D-51 (Morano). Click any district for its number. Boundaries load live from NYC Open Data in your browser.")
-    st.components.v1.html(district_map_html(), height=620)
+    st.caption("All 51 Council districts, citywide. Pick any district to highlight it, and click any district on the "
+               "map for its number. Boundaries load live from NYC Open Data in your browser.")
+    hl = st.selectbox("Highlight a district (optional)", ["(none)"] + [str(i) for i in range(1, 52)], key="map_hl")
+    st.components.v1.html(district_map_html(None if hl == "(none)" else int(hl)), height=620)
     st.caption("Reference map. If the boundaries don't appear, your network may be blocking the data source — let me "
                "know and I'll wire it to a specific dataset URL.")
+
 
 # ---------------- OVERVIEW ----------------
 with t_over:

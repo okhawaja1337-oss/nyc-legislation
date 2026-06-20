@@ -144,6 +144,13 @@ class LegistarClient:
         except Exception:
             return []
 
+    def votes(self, history_id):
+        # NYC quirk: roll-call votes are fetched via the matter-history id
+        try:
+            return self._get(f"eventitems/{history_id}/votes")
+        except Exception:
+            return []
+
     def council_members(self):
         """Current Council Member names from the City Council body's active office records."""
         try:
@@ -239,6 +246,36 @@ COMPLAINT_MAP = [
     (("lead", "mold", "asbestos"), "Lead"),
 ]
 _BOROUGHS = ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island"]
+
+
+def matter_vote_events(client, histories):
+    """Collect roll-call vote events for a matter from its histories.
+    Returns a list of {date, action, body, result, tally{value:count}, votes[{Member,Vote}]}."""
+    out = []
+    for h in histories or []:
+        if not h.get("MatterHistoryRollCallFlag"):
+            continue
+        hid = h.get("MatterHistoryId")
+        if hid is None:
+            continue
+        vs = client.votes(hid)
+        if not vs:
+            continue
+        tally, rows = {}, []
+        for v in vs:
+            val = (v.get("VoteValueName") or "").strip() or "—"
+            nm = (v.get("VotePersonName") or "").strip()
+            tally[val] = tally.get(val, 0) + 1
+            rows.append({"Member": nm, "Vote": val})
+        out.append({
+            "date": _date(h.get("MatterHistoryActionDate")),
+            "action": (h.get("MatterHistoryActionName") or "").strip(),
+            "body": (h.get("MatterHistoryActionBodyName") or "").strip(),
+            "result": (h.get("MatterHistoryPassedFlagName") or "").strip(),
+            "tally": tally,
+            "votes": sorted(rows, key=lambda r: (r["Vote"], r["Member"])),
+        })
+    return out
 
 
 def bill_311_keyword(row):
@@ -435,17 +472,24 @@ User question: {q}
 JSON:"""
 
 
-QUERY_ANSWER_PROMPT = """You are a NYC Council legislative analyst. Answer the user's question using ONLY the EVIDENCE \
-provided (matched bills and/or specific bill details). Rules:
-- Be concrete and cite bill file numbers (e.g., Int 0220-2026).
-- If listing, give a one-line summary then the relevant bills. If comparing, use a clear structured comparison.
-- Do NOT invent bills, sponsors, numbers, or facts not present in the evidence.
-- If sponsor counts are marked unavailable, say so and suggest loading with "Include sponsors".
-- If the evidence is empty or insufficient, say what to load to answer it.
+QUERY_ANSWER_PROMPT = """You are an expert assistant on New York City government, law, and legislation, helping a \
+NYC City Council staffer. Answer like a knowledgeable, plain-spoken legislative analyst. You can handle:
+- Questions about NYC Council bills — use the EVIDENCE provided (cite file numbers like Int 0220-2026).
+- How city government works — the City Charter, the Administrative Code, the Rules of the City of New York (RCNY), the
+  legislative process, committees, ULURP / land use, the budget and capital process, oversight, and what agencies do.
+- Finding the actual law — when asked for a code section or ordinance, give the specific citation (e.g.,
+  "Admin. Code § 27-2005", "Charter § 197-c", "1 RCNY") and, when web search is available, look it up and link an
+  authoritative source (nyc.gov, the NYC Administrative Code / American Legal Publishing, the NY State Senate/Legislature).
+
+Rules:
+- For facts about specific loaded bills, use ONLY the EVIDENCE; never invent sponsors, counts, status, or text.
+- For law and process questions, be accurate and cite the specific section. If you are not certain of a citation,
+  search for it or say you're unsure — NEVER fabricate a section number or quote.
+- Prefer official/primary sources. Be concise and practical; use short paragraphs and bullets.
 
 USER QUESTION: {q}
 
-EVIDENCE (JSON):
+EVIDENCE from the loaded NYC Council data (may be empty or not relevant for general questions):
 {ev}
 
 Answer:"""
@@ -528,15 +572,17 @@ class AIImpact:
             except Exception:
                 return {}
 
-    def chat_answer(self, q, evidence):
+    def chat_answer(self, q, evidence, allow_web=True):
         if not self.key:
             raise RuntimeError("ANTHROPIC_API_KEY not set")
-        ev = json.dumps(evidence, ensure_ascii=False)[:9000]
-        body = {"model": self.model, "max_tokens": 1200,
-                "messages": [{"role": "user", "content": QUERY_ANSWER_PROMPT.format(q=q[:1500], ev=ev)}]}
+        ev = json.dumps(evidence, ensure_ascii=False)[:8000]
+        body = {"model": self.model, "max_tokens": 1600,
+                "messages": [{"role": "user", "content": QUERY_ANSWER_PROMPT.format(q=q[:2000], ev=ev)}]}
+        if allow_web:
+            body["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
         r = self.s.post(ANTHROPIC_URL, headers={
             "x-api-key": self.key, "anthropic-version": "2023-06-01",
-            "content-type": "application/json"}, json=body, timeout=120)
+            "content-type": "application/json"}, json=body, timeout=180)
         r.raise_for_status()
         return "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text").strip()
 
@@ -991,6 +1037,25 @@ def dossier_stats(mb, member):
             "top_coalition": dict(list(coal.items())[:8]),
             "example_prime_bills": prime_titles}
 
+
+def coalition_edges(rows, top_members=28, min_weight=2):
+    """Build a co-sponsorship network from loaded rows.
+    Nodes = members (size by # bills sponsored); edges = # bills two members co-sponsored."""
+    import collections, itertools
+    deg = collections.Counter()
+    pair = collections.Counter()
+    for r in rows:
+        names = sorted({n.strip() for n in (r.get("_sponsor_names") or []) if n and n.strip()})
+        for n in names:
+            deg[n] += 1
+        for a, b in itertools.combinations(names, 2):
+            pair[(a, b)] += 1
+    top = {m for m, _ in deg.most_common(top_members)}
+    nodes = [{"id": m, "label": m, "value": deg[m]} for m in top]
+    edges = [{"from": a, "to": b, "value": w}
+             for (a, b), w in pair.items() if a in top and b in top and w >= min_weight]
+    return nodes, edges
+
 import streamlit as st
 import pandas as pd
 import datetime as _dt
@@ -1076,6 +1141,15 @@ def fetch_detail(mid):
     try: out["text"] = c.text_plain(mid, None)
     except Exception: pass
     return out
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_votes(mid):
+    c = _client()
+    try:
+        hi = c.histories(mid)
+    except Exception:
+        return []
+    return matter_vote_events(c, hi)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_hearings(frm, to):
@@ -1225,9 +1299,9 @@ elif not rows:
 elif load:
     st.success(f"Loaded **{len(rows)}** items for **{loaded_year}**. Use the tabs below.")
 
-t_list, t_ask, t_hear, t_detail, t_members, t_dossier, t_compare, t_over, t_changes, t_about = st.tabs(
+t_list, t_ask, t_hear, t_detail, t_members, t_dossier, t_compare, t_net, t_over, t_changes, t_about = st.tabs(
     ["📋 Legislation list", "💬 Ask", "📅 Hearings", "📄 Bill detail", "👤 Members", "📕 Dossier", "⚖️ Compare",
-     "📊 Overview", "🔔 What changed", "ℹ️ About"])
+     "🕸️ Coalitions", "📊 Overview", "🔔 What changed", "ℹ️ About"])
 
 def need_data():
     st.info("Load data from the ⚙️ controls panel above first (this tab uses that data).")
@@ -1240,16 +1314,50 @@ with t_list:
         st.subheader(f"All legislation — {loaded_year}")
         st.caption("This is the full list (every type). Type a number like **220** to find that bill across all "
                    "types, or words like **ferry**, a committee, or a member's name. Leave blank to see everything.")
-        q = st.text_input("Search")
+        q = st.text_input("Search", key="ls_q")
         cc = st.columns(4)
         types = sorted({r["Type"] for r in rows if r["Type"]})
-        pick_type = cc[0].multiselect("Type (Introduction / Resolution / Land Use…)", types)
+        pick_type = cc[0].multiselect("Type (Introduction / Resolution / Land Use…)", types, key="ls_type")
         statuses = sorted({r["Status"] for r in rows if r["Status"]})
-        pick_status = cc[1].multiselect("Status", statuses)
+        pick_status = cc[1].multiselect("Status", statuses, key="ls_status")
         topics = sorted({p for r in rows for p in (r.get("Topic tags") or "").split("; ") if p})
-        pick_topic = cc[2].multiselect("Policy topic", topics)
-        pick_bor = cc[3].multiselect("Borough named", ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island"])
-        sponsor_q = st.text_input("Signed on by (member name contains) — needs 'Include sponsors' or a member scope")
+        pick_topic = cc[2].multiselect("Policy topic", topics, key="ls_topic")
+        pick_bor = cc[3].multiselect("Borough named", ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island"], key="ls_bor")
+        sponsor_q = st.text_input("Signed on by (member name contains) — needs 'Include sponsors' or a member scope", key="ls_sponsor")
+
+        with st.expander("💾 Saved searches"):
+            saved = st.session_state.setdefault("saved_searches", {})
+            sc = st.columns([3, 1])
+            nm = sc[0].text_input("Name this search", key="save_name")
+            if sc[1].button("Save current", key="save_btn"):
+                if nm.strip():
+                    saved[nm.strip()] = {"q": q, "type": pick_type, "status": pick_status,
+                                         "topic": pick_topic, "bor": pick_bor, "sponsor": sponsor_q}
+                    st.success(f"Saved '{nm.strip()}'.")
+                else:
+                    st.warning("Give the search a name first.")
+            for nm2 in list(saved.keys()):
+                s = saved[nm2]
+                bits = []
+                if s.get("q"): bits.append(f"\u201C{s['q']}\u201D")
+                for lbl, val in [("type", s.get("type")), ("status", s.get("status")),
+                                 ("topic", s.get("topic")), ("borough", s.get("bor"))]:
+                    if val: bits.append(f"{lbl}: {', '.join(val)}")
+                if s.get("sponsor"): bits.append(f"sponsor: {s['sponsor']}")
+                rowc = st.columns([3, 1, 1])
+                rowc[0].markdown(f"**{nm2}** — {'; '.join(bits) or 'all bills'}")
+                if rowc[1].button("Apply", key=f"apply_{nm2}"):
+                    st.session_state["ls_q"] = s.get("q", "")
+                    st.session_state["ls_type"] = [x for x in s.get("type", []) if x in types]
+                    st.session_state["ls_status"] = [x for x in s.get("status", []) if x in statuses]
+                    st.session_state["ls_topic"] = [x for x in s.get("topic", []) if x in topics]
+                    st.session_state["ls_bor"] = s.get("bor", [])
+                    st.session_state["ls_sponsor"] = s.get("sponsor", "")
+                    st.rerun()
+                if rowc[2].button("Delete", key=f"del_{nm2}"):
+                    saved.pop(nm2, None); st.rerun()
+            st.caption("Saved searches last while the app is open.")
+
         f = [r for r in rows if matches_search(r, q)]
         if pick_type:   f = [r for r in f if r["Type"] in pick_type]
         if pick_status: f = [r for r in f if r["Status"] in pick_status]
@@ -1310,9 +1418,10 @@ with t_ask:
     elif not anthropic_key.strip():
         st.info("Add your Anthropic key in the ⚙️ controls panel to use the AI chat.")
     else:
-        st.caption("Try: *housing bills with 8+ sponsors* · *compare Int 220 to Int 419* · "
-                   "*what did Hanks introduce on public safety?* · *which enacted bills name Staten Island?* — "
-                   "it reads the loaded bills and fetches a named bill's text/sponsors on demand.")
+        st.caption("Ask anything about NYC legislation **and** city government — bills, the legislative process, the "
+                   "City Charter, the Administrative Code, ULURP, the budget process, what an agency does, or *find me "
+                   "the code section on…*. Bill facts come from your loaded data; law/process answers can use web search.")
+        allow_web = st.checkbox("🌐 Allow web search (find codes, ordinances, current info)", value=True)
 
         def _resolve_ref(ref, rws):
             ref = (ref or "").strip()
@@ -1383,7 +1492,7 @@ with t_ask:
                     evidence["note"] = "Sponsor counts unavailable — load with 'Include sponsors' for accurate min_sponsors filtering."
             if not evidence:
                 evidence["overview"] = {"loaded": len(rows), "by_status": status_counts(rows), "by_type": type_counts(rows)}
-            return ai.chat_answer(q, evidence)
+            return ai.chat_answer(q, evidence, allow_web=allow_web)
 
         history = st.session_state.setdefault("ask_history", [])
         for msg in history:
@@ -1501,6 +1610,29 @@ with t_detail:
                 "By": h.get("MatterHistoryActionBodyName"), "Result": h.get("MatterHistoryPassedFlagName")}
                 for h in sorted(hi, key=lambda x: x.get("MatterHistoryActionDate") or "")]),
                 hide_index=True, use_container_width=True)
+        has_rollcall = any(h.get("MatterHistoryRollCallFlag") for h in (hi or []))
+        with st.expander("🗳️ Roll-call votes — who voted yes / no" + ("" if has_rollcall else "  (none recorded yet)")):
+            if not has_rollcall:
+                st.caption("No roll-call votes are recorded for this bill yet (most bills are voted in committee/stated "
+                           "only once they advance).")
+            else:
+                if st.button("Load roll-call votes", key=f"votes_btn_{mid}"):
+                    with st.spinner("Fetching votes from Legistar..."):
+                        st.session_state.setdefault("votes_cache", {})[mid] = fetch_votes(mid)
+                ve = st.session_state.get("votes_cache", {}).get(mid)
+                if ve is not None:
+                    if not ve:
+                        st.caption("No individual votes returned for this bill.")
+                    for ev in ve:
+                        head = f"**{ev['date']} · {ev['body'] or 'Council'}** — {ev['action']}"
+                        if ev["result"]:
+                            head += f"  ·  **{ev['result']}**"
+                        st.markdown(head)
+                        if ev["tally"]:
+                            st.caption("  ·  ".join(f"{k}: {v}" for k, v in ev["tally"].items()))
+                        if ev["votes"]:
+                            st.dataframe(pd.DataFrame(ev["votes"]), hide_index=True,
+                                         use_container_width=True, height=min(420, 60 + 28 * len(ev["votes"])))
         if at:
             st.markdown("**Attachments:**")
             for a in at:
@@ -1637,6 +1769,51 @@ with t_compare:
                 "Passed": [overview_general(ma)["passed"], overview_general(mb)["passed"]],
                 "Dead/filed": [overview_general(ma)["dead"], overview_general(mb)["dead"]]})
             st.dataframe(comp, hide_index=True, use_container_width=True)
+
+# ---------------- COALITIONS (co-sponsorship network) ----------------
+def coalition_html(nodes, edges):
+    import json as _json
+    return """
+<div id="net" style="height:560px;border-radius:12px;background:#0a0f1c;border:1px solid #1e2a44;"></div>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script>
+  var nodes = new vis.DataSet(%s);
+  var edges = new vis.DataSet(%s);
+  var net = new vis.Network(document.getElementById('net'), {nodes:nodes, edges:edges}, {
+    nodes:{shape:'dot', scaling:{min:6,max:42, label:{min:11,max:22}},
+           font:{color:'#e7eefb', size:13, face:'Arial'},
+           color:{background:'#2563eb', border:'#7dd3fc', highlight:{background:'#3b82f6', border:'#bae6fd'}}},
+    edges:{color:{color:'#33507f', highlight:'#7dd3fc'}, scaling:{min:1,max:9},
+           smooth:{type:'continuous'}, selectionWidth:2},
+    physics:{stabilization:{iterations:180}, barnesHut:{gravitationalConstant:-9000, springLength:135, springConstant:0.03}},
+    interaction:{hover:true, tooltipDelay:120}
+  });
+</script>""" % (_json.dumps(nodes), _json.dumps(edges))
+
+with t_net:
+    if not bundle or not any(r.get("_sponsor_names") for r in rows):
+        st.info("Turn on **Include sponsors** in the ⚙️ controls panel (or load a year of all legislation with sponsors) "
+                "so the co-sponsorship network can be drawn.")
+    else:
+        st.subheader("🕸️ Co-sponsorship coalitions")
+        st.caption("Each dot is a Council Member; bigger dots sponsor more of the loaded bills. A line means two members "
+                   "co-sponsored bills together; thicker lines = more shared bills. Drag dots, hover, and zoom.")
+        cc = st.columns(2)
+        topn = cc[0].slider("Members to show (by activity)", 8, 51, 28, key="net_top")
+        minw = cc[1].slider("Min. shared bills for a line", 1, 10, 2, key="net_min")
+        nodes, edges = coalition_edges(rows, top_members=topn, min_weight=minw)
+        if not nodes:
+            st.warning("No sponsor data in the loaded set yet.")
+        else:
+            st.components.v1.html(coalition_html(nodes, edges), height=580)
+            st.caption(f"{len(nodes)} members · {len(edges)} co-sponsorship links shown. "
+                       "Tighten 'min. shared bills' if it looks crowded.")
+            # strongest partnerships table
+            pairs = sorted(edges, key=lambda e: e["value"], reverse=True)[:12]
+            if pairs:
+                st.markdown("**Strongest partnerships (most bills co-sponsored):**")
+                st.dataframe(pd.DataFrame([{"Member A": p["from"], "Member B": p["to"], "Shared bills": p["value"]}
+                                           for p in pairs]), hide_index=True, use_container_width=True)
 
 # ---------------- OVERVIEW ----------------
 with t_over:

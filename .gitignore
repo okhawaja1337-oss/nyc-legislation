@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+.streamlit/secrets.toml
+*.xlsx
+legistar_state.db
+.DS_Store

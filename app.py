@@ -1122,7 +1122,17 @@ import streamlit as st
 import pandas as pd
 import datetime as _dt
 
-st.set_page_config(page_title="NYC Council Explorer", layout="wide", initial_sidebar_state="collapsed")
+# v2 feature modules (self-contained; safe to import here — no side effects)
+import llm as _llm
+import briefing as _brief
+import policylab as _lab
+import people as _people
+try:
+    from sources import nystate as _nys, congress as _cong
+except Exception:  # keep the app up even if a source module has an issue
+    _nys = _cong = None
+
+st.set_page_config(page_title="NYC Legislative Intelligence", layout="wide", initial_sidebar_state="collapsed")
 NYC_TOKEN = "Uvxb0j9syjm3aI8h46DhQvnX5skN4aSUL0x_Ee3ty9M.ew0KICAiVmVyc2lvbiI6IDEsDQogICJOYW1lIjogIk5ZQyByZWFkIHRva2VuIDIwMTcxMDI2IiwNCiAgIkRhdGUiOiAiMjAxNy0xMC0yNlQxNjoyNjo1Mi42ODM0MDYtMDU6MDAiLA0KICAiV3JpdGUiOiBmYWxzZQ0KfQ"
 
 def year_window(year):
@@ -1176,13 +1186,44 @@ a { color:var(--cyan) !important; }
 h1,h2,h3 { color:var(--ink); }
 div[data-testid="stAlert"] { border-radius:12px; background:var(--surf); border:1px solid var(--line); color:var(--ink); }
 hr { border-color:var(--line); }
+
+/* ---- v2 component system ---- */
+.stTabs .stTabs [data-baseweb="tab"] { padding:5px 11px; font-size:.86rem; }
+.kicker { text-transform:uppercase; letter-spacing:.14em; font-size:.7rem; font-weight:800; color:var(--mut); }
+.hero { background:linear-gradient(135deg,#0b1226 0%,#132a52 55%,#1e3a8a 130%);
+  border:1px solid #24365e; border-radius:18px; padding:22px 26px; margin-bottom:16px; position:relative; overflow:hidden;
+  box-shadow:0 12px 34px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06); }
+.hero h1 { font-size:1.7rem; font-weight:800; margin:0 0 4px; color:#fff; }
+.hero p { color:#cdd9f0; margin:0; opacity:.9; }
+.hero:after { content:""; position:absolute; right:-40px; top:-80px; width:280px; height:280px;
+  background:radial-gradient(circle, rgba(56,189,248,.20) 0%, rgba(56,189,248,0) 70%); }
+.badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:.72rem; font-weight:700;
+  letter-spacing:.02em; border:1px solid transparent; }
+.b-nyc   { background:rgba(59,130,246,.16); color:#93c5fd; border-color:rgba(59,130,246,.4); }
+.b-state { background:rgba(139,92,246,.16); color:#c4b5fd; border-color:rgba(139,92,246,.4); }
+.b-fed   { background:rgba(239,68,68,.15);  color:#fca5a5; border-color:rgba(239,68,68,.4); }
+.b-muted { background:var(--surf2); color:var(--mut); border-color:var(--line); }
+.b-green { background:rgba(52,211,153,.15); color:#6ee7b7; border-color:rgba(52,211,153,.35); }
+.card { background:linear-gradient(180deg,var(--surf) 0%,var(--bg2) 100%); border:1px solid var(--line);
+  border-radius:14px; padding:14px 16px; margin-bottom:10px; box-shadow:0 4px 14px rgba(0,0,0,.30); }
+.card h4 { margin:0 0 4px; color:var(--ink); font-size:1.02rem; }
+.card .meta { color:var(--mut); font-size:.82rem; }
+.pcard { border-left:4px solid var(--blue); }
+.pcard.state { border-left-color:#8b5cf6; } .pcard.fed { border-left-color:#ef4444; }
+.brief { background:#0e1830; border:1px solid var(--line); border-left:4px solid var(--cyan);
+  border-radius:12px; padding:6px 20px 14px; }
+.brief h2 { color:#dbeafe; font-size:1.15rem; margin-top:14px; }
+.chip { display:inline-block; background:var(--surf2); border:1px solid var(--line); color:var(--mut);
+  border-radius:8px; padding:2px 9px; font-size:.75rem; margin:2px 4px 2px 0; }
+.stars { color:#fbbf24; letter-spacing:2px; }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="appbar">
-  <div class="appbar-title">🗽 NYC Council Explorer</div>
-  <div class="appbar-sub">Legislation · Sponsors · Committees · Hearings · Member dossiers — live from NYC Legistar</div>
+  <div class="appbar-title">🗽 NYC Legislative Intelligence</div>
+  <div class="appbar-sub">City Hall · Albany · Washington — legislation, members, elections & votes that shape New York City.
+  &nbsp;<b>“Bulletpoints for Bureaucrats”</b> briefings built for the desk.</div>
   <span class="livepill">● LIVE</span>
 </div>
 """, unsafe_allow_html=True)
@@ -1361,9 +1402,24 @@ elif not rows:
 elif load:
     st.success(f"Loaded **{len(rows)}** items for **{loaded_year}**. Use the tabs below.")
 
-t_list, t_ask, t_hear, t_detail, t_members, t_dossier, t_compare, t_net, t_map, t_over, t_changes, t_about = st.tabs(
-    ["📋 Legislation list", "💬 Ask", "📅 Hearings", "📄 Bill detail", "👤 Members", "📕 Dossier", "⚖️ Compare",
-     "🤝 Coalitions", "🗺️ District map", "📊 Overview", "🔔 What changed", "ℹ️ About"])
+# Grouped, two-level navigation: 7 clean sections, each with focused sub-tabs.
+# (Streamlit tab containers carry their own path, so the `with t_x:` blocks
+#  below can stay where they are and still render inside the right section.)
+sec_home, sec_leg, sec_levels, sec_people, sec_brief, sec_ask, sec_about = st.tabs(
+    ["🏛️ Command Center", "📜 Legislation", "🌐 All Levels", "👥 People & Coalitions",
+     "📰 Briefings & Ideas", "💬 Ask", "ℹ️ About"])
+t_home, t_ask, t_about = sec_home, sec_ask, sec_about
+with sec_leg:
+    t_list, t_detail, t_hear, t_changes, t_over = st.tabs(
+        ["📋 Legislation list", "📄 Bill detail", "📅 Hearings", "🔔 What changed", "📊 Overview"])
+with sec_levels:
+    t_gov, t_dir, t_elect = st.tabs(
+        ["🏙️ State & Federal", "👤 Who governs NYC", "🗳️ Elections & terms"])
+with sec_people:
+    t_members, t_dossier, t_compare, t_net, t_map = st.tabs(
+        ["👤 Members", "📕 Dossier", "⚖️ Compare", "🤝 Coalitions", "🗺️ District map"])
+with sec_brief:
+    t_brief, t_lab = st.tabs(["📰 Briefing Studio", "💡 Policy Lab"])
 
 def need_data():
     st.info("Load data from the ⚙️ controls panel above first (this tab uses that data).")
@@ -2060,14 +2116,554 @@ with t_changes:
 with t_about:
     st.subheader("About this tool")
     st.markdown("""
-**NYC Council Explorer** pulls live data from the NYC Council's official Legistar system:
-- **Legislation list** — every bill for the chosen **year**, all types, searchable by number or word (Legistar-style).
-- **Hearings** — committee meeting schedule, locations, agendas, and outcomes.
-- **Bill detail** — sponsors, committee, status, history, attachments, full text.
-- **Members & Dossiers** — any member's record by year, lead vs. co-sponsor, coalition, and an AI profile.
+**NYC Legislative Intelligence** tracks the legislation, people, elections, and votes that shape New York City —
+across **three levels of government** — and turns them into desk-ready briefings.
 
-**Policy topics** are auto-tagged from each bill's text; bills are also flagged by the **boroughs** they name.
+**📜 Legislation (City Hall)** — live from the NYC Council's official **Legistar** system:
+- **Legislation list** — every bill for the chosen year, all types, searchable by number or word.
+- **Hearings** — committee schedule, locations, agendas, and outcomes.
+- **Bill detail** — sponsors, committee, status, history, roll-call votes, attachments, full text.
+- **What changed** — new co-sponsors, amendments, and status moves since the last load.
 
-**About the AI dossier:** it analyzes only a member's public sponsorship record (not floor votes), is AI-generated,
-and is labeled as inference — not an official statement.
+**🌐 All Levels (Albany + Washington)**
+- **State & Federal** — search **NY State** bills (NY Senate Open Legislation API) and track what **NYC's
+  U.S. House delegation and senators** are sponsoring in Congress (Congress.gov API).
+- **Who governs NYC** — a unified directory of officials at the city, state, and federal levels.
+- **Elections & terms** — a deterministic calendar of every office and when it's next on the ballot.
+
+**👥 People & Coalitions** — member records, dossiers, head-to-head compare, co-sponsorship coalitions, district map.
+
+**📰 Briefings & Ideas**
+- **Briefing Studio** — *“Bulletpoints for Bureaucrats.”* Turn any bill, member, or topic into a tight,
+  plain-English briefing (staff, press-ready, constituent, or one-pager), copy-ready and exportable.
+- **Policy Lab** — brainstorm new laws and policies: structured, staff-ready concepts with mechanism,
+  sponsor/opposition, fiscal & legal flags, precedents, and a draft intro summary.
+
+**Data vs. analysis.** Facts (bills, sponsors, votes, members) come from official APIs. Anything AI-written is
+labeled as **analysis/inference**, is grounded in the provided data, and never invents figures — it names the
+source to check. Add your **Anthropic key** in the ⚙️ controls panel to switch on the AI features; the NY State
+and Congress bill searches use their own free API keys, entered on the **State & Federal** tab.
+
+_Keys are used only for your live session and are not stored by this app._
 """)
+
+
+# ============================================================================
+# v2 — shared helpers for the new tabs
+# ============================================================================
+LEVEL_BADGE = {"NYC": "b-nyc", "NY State": "b-state", "Federal": "b-fed",
+               "U.S. Congress": "b-fed"}
+
+
+def _badge(text, cls="b-muted"):
+    return f'<span class="badge {cls}">{text}</span>'
+
+
+def _level_badge(level):
+    return _badge(level, LEVEL_BADGE.get(level, "b-muted"))
+
+
+def _get_llm(smart=False):
+    """Build the shared LLM client from the key in the controls panel."""
+    key = (anthropic_key or "").strip() or os.environ.get("ANTHROPIC_API_KEY")
+    model = _llm.SMART_MODEL if smart else _llm.FAST_MODEL
+    return _llm.LLM(api_key=key, model=model)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_federal_delegation():
+    """NYC's U.S. House members + both NY senators (no key needed)."""
+    if not _cong:
+        return []
+    legs = _cong.load_legislators()
+    return [_people.federal_profile(p) for p in _cong.nyc_delegation(legs)]
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def nys_search(term, yr, key):
+    if not _nys:
+        return []
+    return _nys.NYStateClient(api_key=key).search_bills(term, year=yr, limit=50)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def nys_members(yr, key, chamber):
+    if not _nys:
+        return []
+    return _nys.NYStateClient(api_key=key).members(year=yr, chamber=chamber)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def congress_member_bills(bioguide, kind, key):
+    if not _cong:
+        return []
+    return _cong.CongressClient(api_key=key).member_legislation(bioguide, kind=kind)
+
+
+def _brief_download_row(md, title, key_prefix):
+    """Copy box + Markdown / print-HTML / Excel download buttons for a briefing."""
+    st.code(md, language="markdown")
+    cols = st.columns(3)
+    cols[0].download_button("⬇️ Markdown", md, f"{title}.md", "text/markdown",
+                            key=f"{key_prefix}_md", use_container_width=True)
+    html = _brief.print_html(_brief.md_to_html(md), title=title)
+    cols[1].download_button("🖨️ Print / PDF (HTML)", html, f"{title}.html", "text/html",
+                            key=f"{key_prefix}_html", use_container_width=True)
+    try:
+        from openpyxl import Workbook as _WB
+        wb = _WB(); ws = wb.active; ws.title = "Briefing"
+        ws.append(["Section", "Content"])
+        for sec, txt in _brief.briefing_to_rows(md):
+            ws.append([sec, txt])
+        ws.column_dimensions["A"].width = 26; ws.column_dimensions["B"].width = 90
+        path = "/tmp/briefing.xlsx"; wb.save(path)
+        with open(path, "rb") as fh:
+            cols[2].download_button("⬇️ Excel", fh.read(), f"{title}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"{key_prefix}_xlsx", use_container_width=True)
+    except Exception:
+        cols[2].caption("Excel export unavailable.")
+
+
+# ============================================================================
+# 🏛️ COMMAND CENTER
+# ============================================================================
+with t_home:
+    st.markdown(
+        '<div class="hero"><h1>Command Center</h1>'
+        '<p>One desk for every level of government that touches New York City — '
+        'and the briefings that make it repeatable.</p></div>', unsafe_allow_html=True)
+
+    if bundle and rows:
+        s = overview_general(rows)
+        m = st.columns(4)
+        m[0].metric("Bills loaded", s["total"])
+        m[1].metric("Alive (in committee)", s["alive"])
+        m[2].metric("Passed / enacted", s["passed"])
+        recent_n = len([r for r in rows if r.get("Last Modified (UTC)")])
+        m[3].metric("With activity", recent_n)
+        st.caption(f"Loaded scope: **{loaded_year or '—'}** · "
+                   f"{'sponsors included' if any(r.get('_sponsor_names') for r in rows) else 'sponsors not loaded'}. "
+                   "Use **Briefing Studio** to turn any of these into a one-pager.")
+        cc = st.columns(2)
+        pc = pillar_counts(rows)
+        if pc:
+            cc[0].markdown("**Top policy topics loaded**")
+            cc[0].bar_chart(pd.Series(dict(sorted(pc.items(), key=lambda x: -x[1])[:8])))
+        recent = sorted([r for r in rows if r.get("Last Modified (UTC)")],
+                        key=lambda r: r["Last Modified (UTC)"], reverse=True)[:6]
+        if recent:
+            cc[1].markdown("**Most recently active bills**")
+            cc[1].dataframe(pd.DataFrame([{"File": r["File"], "Status": r["Status"],
+                "Updated": (r["Last Modified (UTC)"] or "")[:10]} for r in recent]),
+                hide_index=True, use_container_width=True)
+    else:
+        st.info("**Start here:** open the ⚙️ Data controls panel above, pick **All legislation + 2026**, and press "
+                "**Load data**. Then every tab — and the Briefing Studio — comes alive. The **All Levels**, "
+                "**Elections**, and **Policy Lab** tabs work even before you load City Council data.")
+
+    st.divider()
+    st.markdown('<span class="kicker">Three levels of government</span>', unsafe_allow_html=True)
+    bs = _people.branch_summary()
+    lc = st.columns(3)
+    for i, lvl in enumerate(_people.LEVELS):
+        branches = bs.get(lvl, {})
+        body = "".join(f'<div class="chip">{b}: {n}</div>' for b, n in branches.items())
+        lc[i].markdown(
+            f'<div class="card {"pcard" if lvl=="NYC" else "pcard state" if lvl=="NY State" else "pcard fed"}">'
+            f'<h4>{_level_badge(lvl)} {lvl}</h4><div style="margin-top:8px">{body}</div></div>',
+            unsafe_allow_html=True)
+
+    st.markdown('<span class="kicker">On the ballot soon</span>', unsafe_allow_html=True)
+    cal = _people.election_calendar(_dt.date.today().year, years=4)
+    if cal:
+        st.dataframe(pd.DataFrame([{"Year": r["Year"], "Level": r["Level"], "Office": r["Office"],
+                                    "In (yrs)": r["In"]} for r in cal[:12]]),
+                     hide_index=True, use_container_width=True, height=300)
+    st.caption("Full calendar and who's up for re-election is on the **Elections & terms** tab.")
+
+
+# ============================================================================
+# 🏙️ STATE & FEDERAL
+# ============================================================================
+with t_gov:
+    st.subheader("🏙️ State & Federal action that affects NYC")
+    st.caption("Albany and Washington set the rules NYC lives under — from housing and transit funding to the "
+               "criminal code. Track NY State bills and what NYC's congressional delegation is doing.")
+    kc = st.columns(2)
+    nys_key = kc[0].text_input("NY State Open Legislation API key",
+        st.session_state.get("nys_key", ""), type="password", key="nys_key_in",
+        help="Free at legislation.nysenate.gov/public/subscribe")
+    cong_key = kc[1].text_input("Congress.gov API key",
+        st.session_state.get("cong_key", ""), type="password", key="cong_key_in",
+        help="Free at api.congress.gov/sign-up")
+    st.session_state["nys_key"] = nys_key
+    st.session_state["cong_key"] = cong_key
+
+    g_state, g_fed = st.tabs(["🟣 NY State legislation", "🔴 U.S. Congress (NYC delegation)"])
+
+    with g_state:
+        st.markdown(f"{_level_badge('NY State')} &nbsp; Search NY State bills for the "
+                    f"**{_nys.session_year(int(year) if str(year).isdigit() else 2025) if _nys else '2025'}** session.",
+                    unsafe_allow_html=True)
+        sc = st.columns([4, 1])
+        nq = sc[0].text_input("Search NY State bills (e.g. 'housing NYC', 'MTA', 'rent')", key="nys_q")
+        sc[1].write(""); sc[1].write("")
+        go_nys = sc[1].button("Search", key="nys_go", use_container_width=True)
+        if go_nys:
+            if not nys_key.strip():
+                st.warning("Add your **NY State Open Legislation API key** above to search Albany. It's free.")
+            elif not nq.strip():
+                st.warning("Type something to search for.")
+            else:
+                yr = int(year) if str(year).isdigit() else 2025
+                try:
+                    with st.spinner("Searching Albany…"):
+                        st.session_state["nys_results"] = nys_search(nq.strip(), yr, nys_key.strip())
+                except Exception as e:
+                    st.error(f"NY State search failed: {type(e).__name__}: {e}")
+        res = st.session_state.get("nys_results")
+        if res:
+            st.caption(f"{len(res)} NY State bills")
+            st.dataframe(pd.DataFrame([{"Bill": r["File"], "Type": r["Type"], "Title": r["Title"][:120],
+                "Sponsor": r["Sponsor"], "Status": r["Status"], "Web Link": r["Web Link"]} for r in res]),
+                use_container_width=True, height=440,
+                column_config={"Web Link": st.column_config.LinkColumn("Open", display_text="nysenate.gov")})
+            st.session_state["gov_briefable"] = res
+            st.caption("Send any of these to **Briefing Studio → State/Federal bill** for a one-pager.")
+        elif res == []:
+            st.info("No results (or the search couldn't reach Albany). Try broader terms.")
+
+    with g_fed:
+        st.markdown(f"{_level_badge('Federal')} &nbsp; NYC's representation in Washington — the House members whose "
+                    "districts sit in the five boroughs, plus both NY senators.", unsafe_allow_html=True)
+        deleg = load_federal_delegation()
+        if not deleg:
+            st.info("Couldn't load the delegation roster right now (the public dataset was unreachable). "
+                    "It loads automatically in a normal deployment; try again shortly.")
+        else:
+            names = {f"{d['name']} — {d['seat']} ({d['party'][:1]})": d for d in deleg}
+            pick = st.selectbox("Pick a member of the delegation", list(names.keys()), key="fed_pick")
+            d = names[pick]
+            info = st.columns(3)
+            info[0].metric("Chamber", d["chamber"].replace("U.S. ", ""))
+            info[1].metric("Party", d["party"] or "—")
+            info[2].metric("In office since", d["extra"].get("since", "—"))
+            if not cong_key.strip():
+                st.caption("Add your **Congress.gov API key** above to pull this member's sponsored & "
+                           "cosponsored bills in the current Congress.")
+            else:
+                kind = st.radio("Show", ["sponsored", "cosponsored"], horizontal=True, key="fed_kind")
+                bio = d["extra"].get("bioguide", "")
+                if bio and st.button("Load their bills", key="fed_bills_go"):
+                    try:
+                        with st.spinner("Pulling from Congress.gov…"):
+                            st.session_state["fed_bills"] = congress_member_bills(bio, kind, cong_key.strip())
+                    except Exception as e:
+                        st.error(f"Congress.gov failed: {type(e).__name__}: {e}")
+                fb = st.session_state.get("fed_bills")
+                if fb:
+                    st.dataframe(pd.DataFrame([{"Bill": b["File"], "Title": (b["Title"] or "")[:120],
+                        "Latest action": b["Status"][:80], "Date": b.get("Action date", ""),
+                        "Web Link": b["Web Link"]} for b in fb]),
+                        use_container_width=True, height=380,
+                        column_config={"Web Link": st.column_config.LinkColumn("Open", display_text="congress.gov")})
+                    st.session_state["gov_briefable"] = fb
+                elif fb == []:
+                    st.info("No bills returned for that selection yet.")
+
+
+# ============================================================================
+# 👤 WHO GOVERNS NYC (unified directory)
+# ============================================================================
+with t_dir:
+    st.subheader("👤 Who governs NYC — unified directory")
+    st.caption("Every level, one place. Officials' names come live from official sources, so the roster stays current "
+               "through elections.")
+    lvl = st.radio("Level", ["Federal", "NY State", "NYC Council"], horizontal=True, key="dir_level")
+
+    if lvl == "Federal":
+        deleg = load_federal_delegation()
+        if not deleg:
+            st.info("The public congressional dataset was unreachable just now; it loads automatically in a normal "
+                    "deployment.")
+        else:
+            st.caption(f"{len(deleg)} members — NYC's House delegation + both NY senators.")
+            for d in deleg:
+                ex = d["extra"]
+                extra_bits = []
+                if ex.get("since"): extra_bits.append(f"since {ex['since']}")
+                if d.get("term_end"): extra_bits.append(f"term ends {d['term_end']}")
+                if ex.get("twitter"): extra_bits.append(f"@{ex['twitter']}")
+                meta = " · ".join([d["party"]] + extra_bits)
+                link = f' · <a href="{d["source"]}">official site</a>' if d.get("source") else ""
+                st.markdown(
+                    f'<div class="card pcard fed"><h4>{d["name"]} '
+                    f'<span class="badge b-fed">{d["seat"]}</span></h4>'
+                    f'<div class="meta">{d["chamber"]} · {meta}{link}<br>{d.get("contact","")}</div></div>',
+                    unsafe_allow_html=True)
+
+    elif lvl == "NY State":
+        nkey = st.session_state.get("nys_key", "")
+        if not nkey.strip():
+            st.info("Add your **NY State Open Legislation API key** on the **State & Federal** tab to load Albany "
+                    "members. (It's free.) Meanwhile: NYC sends members to both the **State Senate** and the "
+                    "**State Assembly** — search bills by their names on that tab.")
+        else:
+            ch = st.radio("Chamber", ["State Senate", "State Assembly"], horizontal=True, key="dir_nys_ch")
+            yr = int(year) if str(year).isdigit() else 2025
+            try:
+                with st.spinner("Loading Albany roster…"):
+                    mem = nys_members(yr, nkey.strip(),
+                                      "SENATE" if ch == "State Senate" else "ASSEMBLY")
+            except Exception as e:
+                mem = []; st.error(f"{type(e).__name__}: {e}")
+            if mem:
+                st.caption(f"{len(mem)} members in the {ch} (statewide — NYC districts included).")
+                st.dataframe(pd.DataFrame([{"Name": m["name"], "District": m["district"],
+                    "Party": _people._party(m["party"])} for m in
+                    sorted(mem, key=lambda x: (x["district"] or 0))]),
+                    hide_index=True, use_container_width=True, height=440)
+            else:
+                st.info("No members returned (or Albany was unreachable).")
+
+    else:  # NYC Council
+        members = get_directory()
+        if not members:
+            st.info("The Council roster loads from Legistar; it was unreachable just now. Load any City Council data "
+                    "from the ⚙️ panel and it will populate.")
+        else:
+            st.caption(f"{len(members)} current Council Members. Open the **People & Coalitions → Dossier** tab for any "
+                       "member's full legislative record.")
+            cols = st.columns(3)
+            for i, nm in enumerate(members):
+                cols[i % 3].markdown(
+                    f'<div class="card pcard"><h4>{nm}</h4>'
+                    f'<div class="meta">{_level_badge("NYC")} NYC City Council</div></div>',
+                    unsafe_allow_html=True)
+
+
+# ============================================================================
+# 🗳️ ELECTIONS & TERMS
+# ============================================================================
+with t_elect:
+    st.subheader("🗳️ Elections & terms — what's on the ballot, and when")
+    st.caption("A deterministic calendar built from each office's fixed election cycle (no guessing about "
+               "outcomes). Cross-check specific dates and any special elections with the NYC/NYS Boards of Elections.")
+    this_year = _dt.date.today().year
+    yy = st.number_input("Show elections starting from year", min_value=2024, max_value=2040,
+                         value=this_year, step=1, key="elect_year")
+    up = _people.offices_up_this_year(int(yy))
+    if up:
+        st.markdown(f"**On the ballot in {int(yy)}:**")
+        st.markdown(" ".join(_badge(o["office"], LEVEL_BADGE.get(o["level"], "b-muted"))
+                             for o in up), unsafe_allow_html=True)
+    else:
+        st.caption(f"No regularly-scheduled covered offices open in {int(yy)} (special elections aside).")
+    st.divider()
+    cal = _people.election_calendar(int(yy), years=8)
+    lvlf = st.multiselect("Filter by level", _people.LEVELS, key="elect_lvl")
+    show = [r for r in cal if not lvlf or r["Level"] in lvlf]
+    st.dataframe(pd.DataFrame([{"Year": r["Year"], "In (yrs)": r["In"], "Level": r["Level"],
+        "Office": r["Office"], "Branch": r["Branch"], "Term (yrs)": r["Term (yrs)"]} for r in show]),
+        hide_index=True, use_container_width=True, height=420)
+
+    st.divider()
+    st.markdown("**Federal delegation — who's up next**")
+    deleg = load_federal_delegation()
+    if deleg:
+        st.dataframe(pd.DataFrame([{"Member": d["name"], "Seat": d["seat"], "Party": d["party"],
+            "Term ends": d["term_end"], "Next election": (d["term_end"][:4] if d["term_end"] else "—")}
+            for d in deleg]), hide_index=True, use_container_width=True, height=340)
+        st.caption("House members run every 2 years; senators' term-end year is their next race.")
+    else:
+        st.caption("Delegation roster unavailable right now (loads automatically in a normal deployment).")
+
+
+# ============================================================================
+# 📰 BRIEFING STUDIO — "Bulletpoints for Bureaucrats"
+# ============================================================================
+with t_brief:
+    st.subheader("📰 Briefing Studio — “Bulletpoints for Bureaucrats”")
+    st.caption("Turn any bill, member, or topic into a tight, plain-English briefing you can hand to the Council "
+               "Member or a reporter. Works as a fact sheet without a key; add your Anthropic key for the polished "
+               "write-up and press lines.")
+    _llm_client = _get_llm(smart=True)
+    if not _llm_client.ready:
+        st.info("💡 Add your **Anthropic key** in the ⚙️ controls panel for AI-written briefings. Until then you can "
+                "still generate the **fact skeleton** for any loaded bill.")
+    audience = st.selectbox("Audience & tone", list(_brief.AUDIENCES.keys()), key="brief_aud")
+    mode = st.radio("Briefing subject", ["NYC bill", "State/Federal bill", "Council Member", "Policy topic"],
+                    horizontal=True, key="brief_mode")
+
+    if mode == "NYC bill":
+        if not bundle:
+            need_data()
+        else:
+            pick = st.selectbox("Pick a bill", [r["File"] for r in rows], key="brief_bill")
+            r = next(x for x in rows if x["File"] == pick)
+            if st.button("Generate briefing", type="primary", key="brief_go1"):
+                with st.spinner("Building the briefing…"):
+                    mid = r["MatterId"]
+                    det = {}
+                    try:
+                        sp = r.get("_sponsor_objs") or []
+                        tx = bundle.get("text_map", {}).get(mid, "")
+                        hi = bundle.get("histories_map", {}).get(mid, [])
+                        if not sp and not tx:
+                            d0 = fetch_detail(mid)
+                            sp = current_sponsors({"MatterVersion": None}, d0.get("sponsors", []))
+                            tx = d0.get("text", ""); hi = d0.get("histories", [])
+                        det["sponsors"] = [x.get("MatterSponsorName") for x in sp]
+                        det["history"] = [f"{_date(h.get('MatterHistoryActionDate'))}: "
+                                          f"{(h.get('MatterHistoryActionName') or '').strip()}"
+                                          for h in (hi or [])[-6:]]
+                        rr = dict(r); rr["_sponsor_objs"] = sp
+                        md = _brief.bill_briefing(_llm_client, rr, text=tx,
+                                                  data_ctx=build_data_context(r),
+                                                  audience=audience, detail=det)
+                    except Exception as e:
+                        md = _brief.template_bill_briefing(r) + f"\n\n> _(detail step failed: {e})_"
+                    st.session_state["brief_out"] = (md, pick.replace(" ", "_"))
+            if st.session_state.get("brief_out"):
+                md, title = st.session_state["brief_out"]
+                st.markdown(f'<div class="brief">{_brief.md_to_html(md)}</div>', unsafe_allow_html=True)
+                st.divider(); _brief_download_row(md, title, "brief1")
+
+    elif mode == "State/Federal bill":
+        pool = st.session_state.get("gov_briefable") or []
+        if not pool:
+            st.info("Load some bills first on the **State & Federal** tab (search Albany or pull a member's Congress "
+                    "bills), then come back here — they'll appear in this dropdown.")
+        else:
+            labels = {f'{b["File"]} — {(b["Title"] or "")[:70]}': b for b in pool}
+            pick = st.selectbox("Pick a bill", list(labels.keys()), key="brief_gov")
+            b = labels[pick]
+            if st.button("Generate briefing", type="primary", key="brief_go2"):
+                with st.spinner("Building the briefing…"):
+                    md = _brief.bill_briefing(_llm_client, b, text=b.get("Summary", ""), audience=audience)
+                    st.session_state["brief_out2"] = (md, b["File"].replace(" ", "_"))
+            if st.session_state.get("brief_out2"):
+                md, title = st.session_state["brief_out2"]
+                st.markdown(f'<div class="brief">{_brief.md_to_html(md)}</div>', unsafe_allow_html=True)
+                st.divider(); _brief_download_row(md, title, "brief2")
+
+    elif mode == "Council Member":
+        members = get_directory()
+        who = st.selectbox("Council Member", members, key="brief_member") if members else \
+            st.text_input("Member last name", key="brief_member_txt")
+        if who and st.button("Generate briefing", type="primary", key="brief_go3"):
+            with st.spinner("Assembling the member's record…"):
+                try:
+                    if bundle and member_bills(rows, who):
+                        mb = member_bills(rows, who); stats = dossier_stats(mb, who)
+                    else:
+                        dd = build_member_dossier(who, year); stats = dd["stats"]
+                    md = _brief.member_briefing(_llm_client, who, stats, audience=audience)
+                except Exception as e:
+                    md = f"## {who}\n\n> _(couldn't assemble record: {e})_"
+                st.session_state["brief_out3"] = (md, who.replace(" ", "_"))
+        if st.session_state.get("brief_out3"):
+            md, title = st.session_state["brief_out3"]
+            st.markdown(f'<div class="brief">{_brief.md_to_html(md)}</div>', unsafe_allow_html=True)
+            st.divider(); _brief_download_row(md, title, "brief3")
+
+    else:  # Policy topic
+        if not bundle:
+            need_data()
+        else:
+            topics = sorted({p for r in rows for p in (r.get("Topic tags") or "").split("; ") if p})
+            topic = st.selectbox("Policy topic", topics, key="brief_topic") if topics else \
+                st.text_input("Topic", key="brief_topic_txt")
+            if topic and st.button("Generate briefing", type="primary", key="brief_go4"):
+                with st.spinner("Scanning the loaded bills…"):
+                    match = [r for r in rows if topic.lower() in (r.get("Topic tags") or "").lower()]
+                    ev = {"topic": topic, "matching_count": len(match),
+                          "sample": [{"File": r["File"], "Title": (r["Title"] or "")[:90],
+                                      "Status": r["Status"], "Prime": r.get("Prime Sponsor", "")}
+                                     for r in match[:30]]}
+                    md = _brief.topic_briefing(_llm_client, topic, ev, audience=audience)
+                    st.session_state["brief_out4"] = (md, f"topic_{topic}".replace(" ", "_"))
+            if st.session_state.get("brief_out4"):
+                md, title = st.session_state["brief_out4"]
+                st.markdown(f'<div class="brief">{_brief.md_to_html(md)}</div>', unsafe_allow_html=True)
+                st.divider(); _brief_download_row(md, title, "brief4")
+
+
+# ============================================================================
+# 💡 POLICY LAB — brainstorm new legislation
+# ============================================================================
+with t_lab:
+    st.subheader("💡 Policy Lab — brainstorm new laws & policies")
+    st.caption("Describe a problem or a goal. The Lab returns concrete legislative concepts — mechanism, lead agency, "
+               "who benefits, who pushes back, fiscal & legal flags, a precedent, and a draft intro summary — the raw "
+               "material for a real Introduction.")
+    lab_llm = _get_llm(smart=True)
+    if not lab_llm.ready:
+        st.info("💡 Add your **Anthropic key** in the ⚙️ controls panel to generate ideas.")
+    goal = st.text_area("What problem or goal do you want legislation for?",
+                        placeholder="e.g. Reduce e-bike battery fires in apartment buildings; expand childcare in the Rockaways",
+                        key="lab_goal", height=90)
+    lc = st.columns([1, 1, 1])
+    ctx = lc[0].text_input("Context (district, angle) — optional", key="lab_ctx")
+    n = lc[1].slider("How many ideas", 3, 8, 5, key="lab_n")
+    lc[2].write(""); lc[2].write("")
+    go = lc[2].button("Brainstorm", type="primary", key="lab_go", use_container_width=True)
+    if go:
+        if not lab_llm.ready:
+            st.warning("Add your Anthropic key in the ⚙️ controls panel first.")
+        elif not goal.strip():
+            st.warning("Describe the problem or goal first.")
+        else:
+            with st.spinner("Generating ideas…"):
+                try:
+                    st.session_state["lab_ideas"] = _lab.ideate(lab_llm, goal.strip(), ctx.strip(), n=n)
+                    st.session_state["lab_memo"] = {}
+                except Exception as e:
+                    st.error(f"{type(e).__name__}: {e}")
+    ideas = st.session_state.get("lab_ideas") or []
+    if ideas:
+        st.caption(f"{len(ideas)} concepts — expand any one for a full memo.")
+        for i, idea in enumerate(ideas):
+            stars = "★" * int(idea.get("boldness", 3)) + "☆" * (5 - int(idea.get("boldness", 3)))
+            st.markdown(
+                f'<div class="card"><h4>{idea.get("title","Idea")} '
+                f'<span class="badge b-muted">{idea.get("instrument","")}</span> '
+                f'<span class="stars">{stars}</span></h4>'
+                f'<div class="meta">{idea.get("one_liner","")}</div>'
+                f'<div style="margin-top:8px">'
+                f'<div class="chip">🏛️ {idea.get("lead_agency","—")}</div>'
+                f'<div class="chip">✅ {idea.get("who_benefits","—")[:60]}</div>'
+                f'<div class="chip">⚠️ {idea.get("who_pushes_back","—")[:60]}</div></div></div>',
+                unsafe_allow_html=True)
+            with st.expander(f"Open concept memo — {idea.get('title','Idea')}"):
+                if st.button("Write the one-page memo", key=f"lab_refine_{i}"):
+                    with st.spinner("Developing the concept…"):
+                        st.session_state.setdefault("lab_memo", {})[i] = _lab.refine(
+                            lab_llm, idea, context=ctx.strip())
+                memo = st.session_state.get("lab_memo", {}).get(i)
+                if memo:
+                    st.markdown(f'<div class="brief">{_brief.md_to_html(memo)}</div>', unsafe_allow_html=True)
+                    st.download_button("⬇️ Markdown", memo,
+                        f"{idea.get('title','concept').replace(' ','_')}.md", "text/markdown",
+                        key=f"lab_memo_dl_{i}")
+                else:
+                    st.markdown(f"**Mechanism:** {idea.get('mechanism','—')}")
+                    st.markdown(f"**Fiscal flag:** {idea.get('fiscal_flag','—')}")
+                    st.markdown(f"**Legal flag:** {idea.get('legal_flag') or '—'}")
+                    st.markdown(f"**Precedent:** {idea.get('precedent','—')}")
+                    st.markdown(f"**PR angle:** _{idea.get('pr_angle','—')}_")
+                    st.markdown(f"**First step:** {idea.get('first_step','—')}")
+        try:
+            from openpyxl import Workbook as _WB2
+            wb = _WB2(); ws = wb.active; ws.title = "Ideas"
+            hdrs = list(_lab.ideas_to_rows(ideas)[0].keys()) if ideas else []
+            ws.append(hdrs)
+            for row_ in _lab.ideas_to_rows(ideas):
+                ws.append([row_[h] for h in hdrs])
+            wb.save("/tmp/policy_ideas.xlsx")
+            with open("/tmp/policy_ideas.xlsx", "rb") as fh:
+                st.download_button("⬇️ Download all ideas (Excel)", fh.read(), "policy_ideas.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="lab_xlsx")
+        except Exception:
+            pass

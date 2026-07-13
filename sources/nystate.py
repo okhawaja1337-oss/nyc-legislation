@@ -152,4 +152,30 @@ def normalize_bill(b, full=False):
         row["FullText"] = (active.get("fullText") or "").strip()
         row["Cosponsors"] = [m.get("fullName", "") for m in
                              (active.get("coSponsors", {}) or {}).get("items", [])]
+        row["Votes"] = bill_votes(b)
     return row
+
+
+def bill_votes(b):
+    """Extract floor/committee roll-calls from a full NY State bill object.
+
+    Returns a list of {date, type, description, tally:{AYE,NAY,...}, members:[{name,vote}]}.
+    """
+    out = []
+    votes = ((b or {}).get("votes") or {}).get("items") or []
+    for v in votes:
+        mv = (v.get("memberVotes") or {}).get("items") or {}
+        tally, members = {}, []
+        for code, bucket in mv.items():
+            names = [m.get("fullName", "") for m in (bucket.get("items") or [])]
+            tally[code.title()] = len(names)
+            for nm in names:
+                if nm:
+                    members.append({"name": nm, "vote": code.title()})
+        out.append({
+            "date": (v.get("voteDate") or "")[:10],
+            "type": v.get("voteType", ""),
+            "description": (v.get("committee") or {}).get("name", "") or "Floor vote",
+            "tally": tally, "members": members,
+        })
+    return out

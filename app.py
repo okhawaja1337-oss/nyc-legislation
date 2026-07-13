@@ -1413,11 +1413,12 @@ with sec_leg:
     t_list, t_detail, t_hear, t_changes, t_over = st.tabs(
         ["📋 Legislation list", "📄 Bill detail", "📅 Hearings", "🔔 What changed", "📊 Overview"])
 with sec_levels:
-    t_gov, t_dir, t_elect = st.tabs(
-        ["🏙️ State & Federal", "👤 Who governs NYC", "🗳️ Elections & terms"])
+    t_reps, t_gov, t_votes, t_activity, t_dir, t_elect = st.tabs(
+        ["🏠 Find my reps", "🏙️ State & Federal", "🗳️ Votes & decisions",
+         "🔔 Activity (all levels)", "👤 Who governs NYC", "🗳️ Elections & terms"])
 with sec_people:
-    t_members, t_dossier, t_compare, t_net, t_map = st.tabs(
-        ["👤 Members", "📕 Dossier", "⚖️ Compare", "🤝 Coalitions", "🗺️ District map"])
+    t_members, t_profile, t_dossier, t_compare, t_net, t_map = st.tabs(
+        ["👤 Members", "🪪 Deep profile", "📕 Dossier", "⚖️ Compare", "🤝 Coalitions", "🗺️ District map"])
 with sec_brief:
     t_brief, t_lab = st.tabs(["📰 Briefing Studio", "💡 Policy Lab"])
 
@@ -2667,3 +2668,323 @@ with t_lab:
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="lab_xlsx")
         except Exception:
             pass
+
+
+# ============================================================================
+# v2.1 — cache helpers for the four new pillars
+# ============================================================================
+try:
+    from sources import districts as _dist
+except Exception:
+    _dist = None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def geocode_lookup(address):
+    if not _dist:
+        return {"ok": False, "reason": "address lookup module unavailable"}
+    return _dist.lookup(address)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def federal_committees():
+    if not _cong:
+        return {}
+    return _cong.load_committee_membership()
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def nys_bill_full(print_no, yr, key):
+    if not _nys:
+        return None
+    return _nys.NYStateClient(api_key=key).bill(print_no, year=yr)
+
+
+def _render_profile(profiles_mod, p_llm, level, name, facts, raw):
+    """Shared renderer for a member deep-profile card + facts + AI glance."""
+    cls = "pcard" if level == "NYC" else ("pcard state" if level == "NY State" else "pcard fed")
+    seat = facts.get("seat") or facts.get("chamber") or ""
+    dist = facts.get("district")
+    seat_badge = f'<span class="badge b-muted">District {dist}</span>' if dist else \
+        (f'<span class="badge b-muted">{seat}</span>' if seat else "")
+    st.markdown(
+        f'<div class="card {cls}"><h4>{_level_badge(level)} {name} {seat_badge}</h4>'
+        f'<div class="meta">{facts.get("chamber","")} · {facts.get("party","") or "—"}'
+        + (f' · {facts.get("contact")}' if facts.get("contact") else "") + '</div></div>',
+        unsafe_allow_html=True)
+    frows = profiles_mod.facts_to_rows(facts)
+    if frows:
+        # Values mix ints and strings; cast to str so Arrow can serialize the column.
+        st.dataframe(pd.DataFrame([(k, str(v)) for k, v in frows], columns=["Field", "Value"]),
+                     hide_index=True, use_container_width=True)
+    if p_llm.ready:
+        g = profiles_mod.glance(p_llm, level, name, facts)
+        if g:
+            st.markdown("**🧠 Record at a glance**")
+            st.markdown(f'<div class="brief">{_brief.md_to_html(g)}</div>', unsafe_allow_html=True)
+            st.caption("AI summary from the public data shown above — analysis, not an official statement.")
+    else:
+        st.caption("Add your Anthropic key (⚙️ panel) for an AI 'record at a glance'.")
+    src = raw.get("source") if isinstance(raw, dict) else None
+    if src:
+        st.markdown(f"[Official page]({src})")
+
+
+# ============================================================================
+# 🏠 FIND MY REPS — address → every official who represents it
+# ============================================================================
+with t_reps:
+    st.subheader("🏠 Find my representatives")
+    st.caption("Type any NYC address. We geocode it (NYC Planning's GeoSearch) and find the City Council, State "
+               "Senate, State Assembly, and U.S. House districts that contain it — then match each to the official who "
+               "holds that seat. Great for constituent letters and casework.")
+    ac = st.columns([4, 1])
+    addr = ac[0].text_input("NYC address", placeholder="e.g. 250 Broadway, Manhattan", key="reps_addr")
+    ac[1].write(""); ac[1].write("")
+    go_reps = ac[1].button("Find reps", type="primary", key="reps_go", use_container_width=True)
+    if go_reps and addr.strip():
+        with st.spinner("Geocoding and locating districts…"):
+            st.session_state["reps_result"] = geocode_lookup(addr.strip())
+    res = st.session_state.get("reps_result")
+    if res and not res.get("ok"):
+        st.warning(res.get("reason", "Could not resolve that address."))
+    elif res and res.get("ok"):
+        st.markdown(f"📍 **{res['label']}**")
+        fed = load_federal_delegation()
+        nys_mem = []
+        nkey = st.session_state.get("nys_key", "")
+        if nkey.strip():
+            yr = int(year) if str(year).isdigit() else 2025
+            try:
+                nys_mem = nys_members(yr, nkey.strip(), "SENATE") + nys_members(yr, nkey.strip(), "ASSEMBLY")
+            except Exception:
+                nys_mem = []
+        reps = _people.match_reps(res["districts"], fed, nys_mem)
+        for r in reps:
+            cls = "pcard" if r["level"] == "NYC" else ("pcard state" if r["level"] == "NY State" else "pcard fed")
+            dist = f"District {r['district']}" if isinstance(r["district"], int) else (r["district"] or "—")
+            who = r["member"] or "<i>see official site</i>"
+            link = f' · <a href="{r["link"]}">official page</a>' if r.get("link") else ""
+            st.markdown(
+                f'<div class="card {cls}"><h4>{_level_badge(r["level"])} {r["seat"]} '
+                f'<span class="badge b-muted">{dist}</span></h4>'
+                f'<div class="meta">{who}{link}</div></div>', unsafe_allow_html=True)
+        if not nkey.strip():
+            st.caption("💡 Add your **NY State** key on the *State & Federal* tab to fill in the State Senate/Assembly "
+                       "member names automatically. Council and House members resolve without any key.")
+        st.caption("District boundaries and geocoding come from official public layers (NYC DCP, U.S. Census "
+                   "TIGERweb). Verify edge cases against the NYC/NYS Boards of Elections.")
+
+
+# ============================================================================
+# 🗳️ VOTES & DECISIONS — roll-calls across levels
+# ============================================================================
+with t_votes:
+    st.subheader("🗳️ Votes & decisions")
+    st.caption("How it actually went down: recorded roll-call votes at each level. NYC committee & Stated Meeting "
+               "votes come from Legistar; NY State floor/committee votes from Open Legislation.")
+    v_nyc, v_state = st.tabs(["🟦 NYC Council roll-calls", "🟣 NY State votes"])
+
+    with v_nyc:
+        if not bundle:
+            need_data()
+        else:
+            pick = st.selectbox("Pick a bill", [r["File"] for r in rows], key="votes_bill")
+            r = next(x for x in rows if x["File"] == pick)
+            if st.button("Load roll-call votes", key="votes_load_nyc"):
+                with st.spinner("Fetching recorded votes from Legistar…"):
+                    st.session_state.setdefault("votes2", {})[r["MatterId"]] = fetch_votes(r["MatterId"])
+            ve = st.session_state.get("votes2", {}).get(r["MatterId"])
+            if ve is not None:
+                if not ve:
+                    st.info("No roll-call votes recorded for this bill yet — most bills only get votes once they "
+                            "advance out of committee.")
+                for ev in ve:
+                    head = f"**{ev['date']} · {ev['body'] or 'Council'}** — {ev['action']}"
+                    if ev.get("result"):
+                        head += f"  ·  **{ev['result']}**"
+                    st.markdown(head)
+                    if ev.get("tally"):
+                        st.caption("  ·  ".join(f"{k}: {v}" for k, v in ev["tally"].items()))
+                    if ev.get("votes"):
+                        st.dataframe(pd.DataFrame(ev["votes"]), hide_index=True, use_container_width=True,
+                                     height=min(420, 60 + 28 * len(ev["votes"])))
+            else:
+                st.caption("Pick a bill and load its votes. (Tip: enacted bills are the most likely to have roll-calls.)")
+
+    with v_state:
+        nkey = st.session_state.get("nys_key", "")
+        if not nkey.strip():
+            st.info("Add your **NY State Open Legislation API key** on the *State & Federal* tab to pull Albany votes.")
+        else:
+            pc = st.columns([2, 1])
+            pn = pc[0].text_input("NY State bill number (e.g. S1234 or A5678)", key="votes_nys_pn")
+            pc[1].write(""); pc[1].write("")
+            if pc[1].button("Load votes", key="votes_nys_go", use_container_width=True) and pn.strip():
+                yr = int(year) if str(year).isdigit() else 2025
+                with st.spinner("Fetching from Albany…"):
+                    try:
+                        st.session_state["nys_bill_full"] = nys_bill_full(pn.strip().upper(), yr, nkey.strip())
+                    except Exception as e:
+                        st.error(f"{type(e).__name__}: {e}")
+            nb = st.session_state.get("nys_bill_full")
+            if nb:
+                st.markdown(f"**{nb['File']}** — {nb['Title'][:120]}")
+                st.caption(f"Status: {nb['Status']}")
+                votes = nb.get("Votes") or []
+                if not votes:
+                    st.info("No recorded votes on this bill yet.")
+                for v in votes:
+                    st.markdown(f"**{v['date']} · {v['description']}** ({v['type']})")
+                    if v["tally"]:
+                        st.caption("  ·  ".join(f"{k}: {n}" for k, n in v["tally"].items()))
+                    if v["members"]:
+                        st.dataframe(pd.DataFrame(v["members"]), hide_index=True, use_container_width=True,
+                                     height=min(420, 60 + 26 * len(v["members"])))
+
+
+# ============================================================================
+# 🔔 ACTIVITY (ALL LEVELS) — a watchlist + unified change timeline
+# ============================================================================
+with t_activity:
+    st.subheader("🔔 Activity across all levels")
+    st.caption("Track specific bills from any level and see what moved. Add bills to the watchlist, then **Refresh & "
+               "diff** to catch status changes, amendments, and new actions since you last checked (this session).")
+    wl = st.session_state.setdefault("watchlist", {})  # key -> {level, file, last_status, title, link}
+
+    with st.expander("➕ Add bills to the watchlist", expanded=not wl):
+        st.caption("NYC bills come from your loaded set; State/Federal from your latest searches on the *State & "
+                   "Federal* tab.")
+        addcols = st.columns(3)
+        if bundle and rows:
+            nyc_pick = addcols[0].selectbox("NYC bill", ["—"] + [r["File"] for r in rows], key="wl_nyc")
+            if addcols[0].button("Add NYC bill", key="wl_add_nyc") and nyc_pick != "—":
+                r = next(x for x in rows if x["File"] == nyc_pick)
+                wl[f"NYC:{r['File']}"] = {"level": "NYC", "file": r["File"], "last_status": r["Status"],
+                                          "title": r["Title"], "link": r["Web Link"], "mid": r["MatterId"]}
+                st.success(f"Watching {r['File']}")
+        else:
+            addcols[0].caption("Load NYC data to add city bills.")
+        pool = st.session_state.get("gov_briefable") or []
+        if pool:
+            gp = addcols[1].selectbox("State/Federal bill", ["—"] + [b["File"] for b in pool], key="wl_gov")
+            if addcols[1].button("Add State/Fed bill", key="wl_add_gov") and gp != "—":
+                b = next(x for x in pool if x["File"] == gp)
+                wl[f'{b.get("level","?")}:{b["File"]}'] = {"level": b.get("level", "?"), "file": b["File"],
+                    "last_status": b.get("Status", ""), "title": b.get("Title", ""), "link": b.get("Web Link", "")}
+                st.success(f"Watching {b['File']}")
+        else:
+            addcols[1].caption("Search Albany/Congress first to add those.")
+        addcols[2].caption(f"**{len(wl)}** bills on the watchlist.")
+
+    if not wl:
+        st.info("Your watchlist is empty. Add a few bills above to start tracking them across levels.")
+    else:
+        top = st.columns([1, 1, 3])
+        if top[0].button("🔄 Refresh & diff", type="primary", key="wl_refresh"):
+            changes = []
+            for k, w in wl.items():
+                new_status = w["last_status"]
+                try:
+                    if w["level"] == "NYC" and w.get("mid"):
+                        det = fetch_detail(w["mid"])
+                        his = det.get("histories") or []
+                        if his:
+                            new_status = (sorted(his, key=lambda h: h.get("MatterHistoryActionDate") or "")[-1]
+                                          .get("MatterHistoryActionName") or w["last_status"])
+                    elif w["level"] == "NY State":
+                        nkey = st.session_state.get("nys_key", "")
+                        if nkey.strip():
+                            yr = int(year) if str(year).isdigit() else 2025
+                            nb = nys_bill_full(w["file"], yr, nkey.strip())
+                            if nb:
+                                new_status = nb.get("Status", w["last_status"])
+                except Exception:
+                    pass
+                if new_status and new_status != w["last_status"]:
+                    changes.append({"Bill": w["file"], "Level": w["level"], "Was": w["last_status"],
+                                    "Now": new_status})
+                    w["last_status"] = new_status
+            st.session_state["wl_changes"] = changes
+        if top[1].button("Clear watchlist", key="wl_clear"):
+            st.session_state["watchlist"] = {}; st.rerun()
+
+        ch = st.session_state.get("wl_changes")
+        if ch:
+            st.markdown("**What moved since last check:**")
+            st.dataframe(pd.DataFrame(ch), hide_index=True, use_container_width=True)
+        elif ch == []:
+            st.caption("No changes detected on the last refresh.")
+
+        st.markdown("**Watchlist**")
+        wdf = pd.DataFrame([{"Bill": w["file"], "Level": w["level"], "Status": w["last_status"],
+                             "Title": (w["title"] or "")[:80], "Web Link": w.get("link", "")}
+                            for w in wl.values()])
+        st.dataframe(wdf, use_container_width=True, height=320,
+                     column_config={"Web Link": st.column_config.LinkColumn("Open", display_text="Open")})
+        st.caption("This watchlist lives for the session. For durable, restart-proof tracking, the scheduled backend "
+                   "(handed to Council IT) keeps a lasting history.")
+
+
+# ============================================================================
+# 🪪 DEEP PROFILE — one polished page per member, any level
+# ============================================================================
+with t_profile:
+    st.subheader("🪪 Member deep profile")
+    st.caption("A single, polished page for any official — key facts, committees, record, and an AI 'record at a "
+               "glance'. Names and facts come from official sources.")
+    p_llm = _get_llm(smart=True)
+    lvl = st.radio("Level", ["Federal", "NYC Council", "NY State"], horizontal=True, key="prof_level")
+
+    if lvl == "Federal":
+        deleg = load_federal_delegation()
+        if not deleg:
+            st.info("The delegation roster was unreachable just now; it loads automatically in a normal deployment.")
+        else:
+            names = {f'{d["name"]} — {d["seat"]}': d for d in deleg}
+            who = st.selectbox("Member", list(names.keys()), key="prof_fed")
+            d = names[who]
+            coms = federal_committees().get(d["extra"].get("bioguide", ""), [])
+            import profiles as _profiles
+            facts = _profiles.federal_facts(d, committees=coms)
+            _render_profile(_profiles, p_llm, "Federal", d["name"], facts, d)
+    elif lvl == "NYC Council":
+        import profiles as _profiles
+        members = get_directory()
+        who = st.selectbox("Council Member", members, key="prof_nyc") if members else \
+            st.text_input("Member last name", key="prof_nyc_txt")
+        if who and st.button("Build profile", key="prof_nyc_go", type="primary"):
+            with st.spinner("Assembling record…"):
+                try:
+                    if bundle and member_bills(rows, who):
+                        mb = member_bills(rows, who); stats = dossier_stats(mb, who)
+                    else:
+                        stats = build_member_dossier(who, year)["stats"]
+                    coms = sorted({r.get("Committee/Body") for r in (mb if bundle else [])
+                                   if r.get("Committee/Body")})[:6] if bundle else []
+                    st.session_state["prof_nyc_data"] = (_profiles.council_facts(who, stats, committees=coms), who)
+                except Exception as e:
+                    st.error(f"{type(e).__name__}: {e}")
+        pd_ = st.session_state.get("prof_nyc_data")
+        if pd_ and pd_[1] == who:
+            _render_profile(_profiles, p_llm, "NYC", who, pd_[0], {})
+    else:  # NY State
+        import profiles as _profiles
+        nkey = st.session_state.get("nys_key", "")
+        if not nkey.strip():
+            st.info("Add your **NY State** key on the *State & Federal* tab to load Albany members.")
+        else:
+            ch = st.radio("Chamber", ["State Senate", "State Assembly"], horizontal=True, key="prof_nys_ch")
+            yr = int(year) if str(year).isdigit() else 2025
+            try:
+                mem = nys_members(yr, nkey.strip(), "SENATE" if ch == "State Senate" else "ASSEMBLY")
+            except Exception:
+                mem = []
+            if mem:
+                names = {f'{m["name"]} — District {m["district"]}': m for m in
+                         sorted(mem, key=lambda x: (x["district"] or 0))}
+                who = st.selectbox("Member", list(names.keys()), key="prof_nys")
+                m = names[who]
+                _render_profile(_profiles, p_llm, "NY State", m["name"], _profiles.state_facts(m), {})
+            else:
+                st.info("No members returned (or Albany was unreachable).")

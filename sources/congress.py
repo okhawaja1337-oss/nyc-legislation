@@ -28,6 +28,10 @@ except ImportError:
 
 LEGISLATORS_URL = ("https://unitedstates.github.io/congress-legislators/"
                    "legislators-current.json")
+COMMITTEE_MEMBERSHIP_URL = ("https://unitedstates.github.io/congress-legislators/"
+                            "committee-membership-current.json")
+COMMITTEES_URL = ("https://unitedstates.github.io/congress-legislators/"
+                  "committees-current.json")
 API_BASE = "https://api.congress.gov/v3"
 
 # NY U.S. House districts that lie wholly or substantially within the five
@@ -65,6 +69,32 @@ def load_legislators(timeout=30):
 def _current_term(leg):
     terms = leg.get("terms") or []
     return terms[-1] if terms else {}
+
+
+def load_committee_membership(timeout=30):
+    """Map bioguide_id -> [committee names] using the public committees datasets.
+
+    Returns {} on any failure (feature just shows no committees).
+    """
+    if not requests:
+        return {}
+    try:
+        mem = requests.get(COMMITTEE_MEMBERSHIP_URL, timeout=timeout)
+        com = requests.get(COMMITTEES_URL, timeout=timeout)
+        if mem.status_code != 200 or com.status_code != 200:
+            return {}
+        membership, committees = mem.json(), com.json()
+    except Exception:
+        return {}
+    names = {c.get("thomas_id"): c.get("name") for c in committees if c.get("thomas_id")}
+    out = {}
+    for thomas_id, people in (membership or {}).items():
+        cname = names.get(thomas_id, thomas_id)
+        for p in people or []:
+            bg = p.get("bioguide")
+            if bg:
+                out.setdefault(bg, []).append(cname)
+    return out
 
 
 def nyc_delegation(legislators, districts=None):

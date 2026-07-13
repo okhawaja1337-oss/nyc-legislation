@@ -156,6 +156,63 @@ def _party(p):
             "R": "Republican", "Independent": "Independent", "I": "Independent"}.get(p, p)
 
 
+def match_reps(districts, federal_delegation=None, nys_members=None):
+    """Map resolved district numbers -> the official who holds each seat.
+
+    `districts` is {council, state_senate, state_assembly, congress} of ints/None.
+    Federal is resolved from the delegation dataset (no key); state is resolved
+    if a members list is provided; council links out to the official page.
+    Returns an ordered list of row dicts for display.
+    """
+    districts = districts or {}
+    fed = federal_delegation or []
+    nys = nys_members or []
+    rows = []
+
+    cd = districts.get("council")
+    rows.append({
+        "level": "NYC", "seat": "City Council",
+        "district": cd, "member": None,
+        "link": f"https://council.nyc.gov/district-{cd}/" if cd else "https://council.nyc.gov",
+    })
+
+    ss = districts.get("state_senate")
+    ss_member = next((m["name"] for m in nys
+                      if str(m.get("district")) == str(ss) and "Senate" in m.get("chamber", "")), None)
+    rows.append({
+        "level": "NY State", "seat": "State Senate",
+        "district": ss, "member": ss_member,
+        "link": "https://www.nysenate.gov/find-my-senator",
+    })
+
+    sa = districts.get("state_assembly")
+    sa_member = next((m["name"] for m in nys
+                      if str(m.get("district")) == str(sa) and "Assembly" in m.get("chamber", "")), None)
+    rows.append({
+        "level": "NY State", "seat": "State Assembly",
+        "district": sa, "member": sa_member,
+        "link": "https://nyassembly.gov/mem/search/",
+    })
+
+    cong = districts.get("congress")
+    cong_member = next((d["name"] for d in fed
+                        if str(d.get("district")) == str(cong) and "House" in d.get("chamber", "")), None)
+    cong_link = next((d.get("source") for d in fed
+                      if str(d.get("district")) == str(cong)), "https://www.house.gov")
+    rows.append({
+        "level": "Federal", "seat": "U.S. House",
+        "district": cong, "member": cong_member,
+        "link": cong_link or "https://www.house.gov",
+    })
+
+    # Both NY senators cover every NYC address.
+    for d in fed:
+        if d.get("chamber") == "U.S. Senate":
+            rows.append({"level": "Federal", "seat": "U.S. Senate", "district": "statewide",
+                         "member": d["name"], "link": d.get("source") or "https://www.senate.gov"})
+    return rows
+
+
 def branch_summary():
     """Counts of offices by level and branch — for the Command Center tiles."""
     out = {}

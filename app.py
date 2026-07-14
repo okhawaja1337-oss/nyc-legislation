@@ -176,6 +176,54 @@ class LegistarClient:
         except Exception:
             return []
 
+    def committees(self):
+        """Current committees with their chair + members, from bodies/OfficeRecords.
+
+        These are the official gatekeepers for moving a bill — used to ground the
+        Influence Map in who actually chairs and sits on each committee.
+        """
+        try:
+            bodies = self._get("bodies")
+        except Exception:
+            return []
+        coms = [b for b in bodies if "committee" in (b.get("BodyTypeName") or "").lower()
+                or "committee" in (b.get("BodyName") or "").lower()]
+        today = datetime.now().date().isoformat()
+
+        def _one(b):
+            try:
+                recs = self._get(f"bodies/{b['BodyId']}/OfficeRecords")
+            except Exception:
+                return None
+            chair, members = "", []
+            for r in recs or []:
+                end = (r.get("OfficeRecordEndDate") or "")[:10]
+                if end and end < today:
+                    continue
+                nm = (r.get("OfficeRecordPersonName") or r.get("OfficeRecordFullName") or "").strip()
+                if not nm:
+                    continue
+                title = (r.get("OfficeRecordTitle") or "").lower()
+                if "chair" in title and "vice" not in title and not chair:
+                    chair = nm
+                members.append(nm)
+            if not members:
+                return None
+            return {"committee": (b.get("BodyName") or "").strip(), "chair": chair,
+                    "members": sorted(set(members))}
+
+        out = []
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for fut in as_completed([ex.submit(_one, b) for b in coms]):
+                try:
+                    r = fut.result()
+                    if r:
+                        out.append(r)
+                except Exception:
+                    pass
+        out.sort(key=lambda x: x["committee"])
+        return out
+
 
 # ============================================================================
 # DATA LAYER — pure transforms (no network; unit-testable)
@@ -1288,6 +1336,11 @@ def fetch_agenda(event_id):
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_directory():
     try: return _client().council_members()
+    except Exception: return []
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_committees():
+    try: return _client().committees()
     except Exception: return []
 
 # --- top control panel (replaces the old sidebar) ---
@@ -3210,6 +3263,16 @@ with t_statement:
         key="ss_facts", placeholder="Budget restored X (confirm)\nNYPD headcount down vs. promise (confirm figure)\n"
                                      "Reported cases / category change — cite DCJS/NYPD source")
     _grounded_figures_panel("ss")
+    with st.expander("💵 Budget & headcount — authoritative sources to cite"):
+        st.caption("Budget and agency-headcount figures are nuanced and easy to get wrong, so this tool doesn't "
+                   "auto-generate them. Pull the exact number from an official source below, then paste it into the "
+                   "facts box with its citation.")
+        st.markdown(
+            "- **NYC OMB — Adopted Budget & Financial Plan:** https://www.nyc.gov/site/omb/publications/publications.page\n"
+            "- **Council Finance Division (budget reports):** https://council.nyc.gov/budget/\n"
+            "- **Independent Budget Office (IBO):** https://www.ibo.nyc.ny.us\n"
+            "- **Checkbook NYC (spending & budget data):** https://www.checkbooknyc.com\n"
+            "- **Citywide budgeted headcount (NYC Open Data):** https://data.cityofnewyork.us (search “headcount”)")
     c = st.columns(3)
     fmt = c[0].selectbox("Format", list(_msg.FORMATS.keys()), key="ss_fmt")
     tone = c[1].selectbox("Tone", list(_msg.TONES.keys()), index=1, key="ss_tone")
@@ -3275,7 +3338,21 @@ with t_influence:
     issue_i = st.text_input("Issue", key="im_issue", placeholder="e.g. restoring NYPD headcount in the next budget")
     goal_i = st.text_input("The member's goal", key="im_goal",
                            placeholder="e.g. build a veto-proof majority for a headcount restoration")
-    allow_web = st.checkbox("🌐 Allow web search (current caucus rosters, recent positions)", value=True, key="im_web")
+    ci = st.columns(2)
+    allow_web = ci[0].checkbox("🌐 Allow web search (current caucus rosters, recent positions)", value=True, key="im_web")
+    use_coms = ci[1].checkbox("🏛️ Include official committee leadership (loads from Legistar)", value=True, key="im_coms")
+    committees_i = []
+    if use_coms:
+        with st.spinner("Loading committee chairs & members from Legistar…"):
+            committees_i = get_committees()
+        if committees_i:
+            with st.expander(f"🏛️ Committee leadership — {len(committees_i)} committees (official, current)"):
+                st.dataframe(pd.DataFrame([{"Committee": c["committee"], "Chair": c["chair"] or "—",
+                    "Members": len(c["members"])} for c in committees_i]),
+                    hide_index=True, use_container_width=True, height=280)
+            st.caption("✓ The memo will weigh committee chairs — the real gatekeepers for moving a bill.")
+        else:
+            st.caption("Committee roster unreachable right now (loads in a normal deployment).")
     coal_evidence = {}
     if bundle and any(r.get("_sponsor_names") for r in rows):
         try:
@@ -3297,9 +3374,11 @@ with t_influence:
             st.warning("Enter an issue.")
         else:
             with st.spinner("Analyzing the landscape…"):
+                coms_summary = [{"committee": c["committee"], "chair": c["chair"]}
+                                for c in committees_i] if committees_i else []
                 st.session_state["im_out"] = _msg.influence_memo(
                     i_llm, issue_i.strip(), goal_i.strip(), _people.factions_reference_text(),
-                    coalitions=coal_evidence, allow_web=allow_web)
+                    coalitions=coal_evidence, committees=coms_summary, allow_web=allow_web)
     if st.session_state.get("im_out"):
         out = st.session_state["im_out"]
         st.markdown(f'<div class="brief">{_brief.md_to_html(out)}</div>', unsafe_allow_html=True)

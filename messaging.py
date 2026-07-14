@@ -113,6 +113,9 @@ THE MEMBER'S GOAL: {goal}
 NYC COUNCIL STRUCTURE (reference — rosters shift, verify current membership):
 {factions}
 
+OFFICIAL COMMITTEE LEADERSHIP (from Legistar — current chairs and members; these are
+the real gatekeepers for moving a bill): {committees}
+
 EVIDENCE — co-sponsorship coalitions from the loaded legislation (who actually works
 with whom; may be partial): {coalitions}
 
@@ -174,12 +177,15 @@ def talking_points(llm, issue, stance, facts=None, tone="Firm", n=6):
         return f"_(generation failed: {e})_"
 
 
-def influence_memo(llm, issue, goal, factions_ref, coalitions=None, allow_web=False):
+def influence_memo(llm, issue, goal, factions_ref, coalitions=None, committees=None,
+                   allow_web=False):
     if not (llm and llm.ready):
         return ""
     prompt = INFLUENCE_PROMPT.format(
         issue=issue, goal=goal or "(not specified)",
         factions=factions_ref,
+        committees=json.dumps(committees or [], ensure_ascii=False)[:3500]
+                   or "(not loaded)",
         coalitions=json.dumps(coalitions or {}, ensure_ascii=False)[:4000])
     try:
         return llm.complete(prompt, max_tokens=1600, system=COMMS_STYLE, allow_web=allow_web)

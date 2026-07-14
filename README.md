@@ -30,6 +30,7 @@ sources and an AI briefing/ideation layer.
 - **🗳️ Elections & terms** — a deterministic ballot calendar computed from each office's fixed cycle.
 
 ### 👥 People & Coalitions
+- **📖 CM Wiki** — a personality-driven page per Council Member: an AI *legislative persona* (style only, grounded in the record), their prime-sponsored decisions, policy focus and coalition, and a tool that **estimates their lean on any issue** from their sponsorship record (a labeled inference, not a vote prediction).
 - **Members, Dossier, Compare** — a member's record by year, prime vs. co-sponsor, outcomes, and head-to-head comparison.
 - **🪪 Deep profile** — one polished page per official at any level (facts, committees, record, AI "record at a glance").
 - **🤝 Coalitions** — the co-sponsorship network and strongest partnerships.
@@ -42,6 +43,7 @@ sources and an AI briefing/ideation layer.
 
 ### 📣 Politics & Messaging
 The member's own communications & influence layer — **advocacy in their voice**, kept separate from the neutral-analysis tools.
+- **🎯 Issue War Room** — one topic in, a full kit out: a briefing + grounded figures + computed **swing members** + an influence memo + a draft statement, assembled in one pass and exportable together.
 - **📝 Statement Studio** — press statements, reporter quotes, floor remarks, newsletter blurbs, social posts, or talking points, in a measured/firm/urgent register, with a built-in style anchor.
 - **⚡ Rapid Response** — a grounded, on-message reply to a statement you supply (the tool never manufactures anyone's quote).
 - **🧭 Influence Map** — where a majority comes from on an issue across the progressive wing, moderates, and Republican minority, grounded in the co-sponsorship coalitions.

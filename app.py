@@ -1133,6 +1133,10 @@ try:
     from sources import nystate as _nys, congress as _cong
 except Exception:  # keep the app up even if a source module has an issue
     _nys = _cong = None
+try:
+    from sources import housevotes as _housevotes
+except Exception:
+    _housevotes = None
 
 st.set_page_config(page_title="NYC Legislative Intelligence", layout="wide", initial_sidebar_state="collapsed")
 NYC_TOKEN = "Uvxb0j9syjm3aI8h46DhQvnX5skN4aSUL0x_Ee3ty9M.ew0KICAiVmVyc2lvbiI6IDEsDQogICJOYW1lIjogIk5ZQyByZWFkIHRva2VuIDIwMTcxMDI2IiwNCiAgIkRhdGUiOiAiMjAxNy0xMC0yNlQxNjoyNjo1Mi42ODM0MDYtMDU6MDAiLA0KICAiV3JpdGUiOiBmYWxzZQ0KfQ"
@@ -2785,7 +2789,8 @@ with t_votes:
     st.subheader("🗳️ Votes & decisions")
     st.caption("How it actually went down: recorded roll-call votes at each level. NYC committee & Stated Meeting "
                "votes come from Legistar; NY State floor/committee votes from Open Legislation.")
-    v_nyc, v_state = st.tabs(["🟦 NYC Council roll-calls", "🟣 NY State votes"])
+    v_nyc, v_state, v_fed = st.tabs(
+        ["🟦 NYC Council roll-calls", "🟣 NY State votes", "🔴 U.S. House votes"])
 
     with v_nyc:
         if not bundle:
@@ -2843,6 +2848,43 @@ with t_votes:
                     if v["members"]:
                         st.dataframe(pd.DataFrame(v["members"]), hide_index=True, use_container_width=True,
                                      height=min(420, 60 + 26 * len(v["members"])))
+
+    with v_fed:
+        st.caption("How NYC's U.S. House delegation voted on a floor roll-call. Enter the year and roll-call number "
+                   "(find them at clerk.house.gov → Votes) — we pull the official House Clerk record and filter to "
+                   "NYC's members.")
+        fc = st.columns([1, 1, 1])
+        fyr = fc[0].number_input("Year", min_value=2015, max_value=2035,
+                                 value=_dt.date.today().year, step=1, key="fv_year")
+        frn = fc[1].number_input("Roll-call #", min_value=1, max_value=2000, value=1, step=1, key="fv_roll")
+        fc[2].write(""); fc[2].write("")
+        if fc[2].button("Load House vote", key="fv_go", use_container_width=True):
+            st.session_state["fed_vote_tried"] = True
+            with st.spinner("Fetching from the House Clerk…"):
+                try:
+                    st.session_state["fed_vote"] = _housevotes.roll_vote(int(fyr), int(frn)) if _housevotes else None
+                except Exception as e:
+                    st.session_state["fed_vote"] = None; st.error(f"{type(e).__name__}: {e}")
+        fv = st.session_state.get("fed_vote")
+        if fv is None and st.session_state.get("fed_vote_tried"):
+            st.info("Couldn't find that roll-call (check the year/number, or the Clerk site was unreachable).")
+        if fv:
+            st.markdown(f"**{fv['bill'] or 'Vote'} — {fv['question']}**  ·  Roll {fv['roll']} "
+                        f"({fv['congress']}th Congress)")
+            st.markdown(f"Result: **{fv['result']}** · {fv['date']}")
+            if fv["totals"]:
+                st.caption("House total — " + "  ·  ".join(f"{k}: {n}" for k, n in fv["totals"].items()))
+            deleg = load_federal_delegation()
+            rows_fd, tally = _housevotes.delegation_positions(fv, deleg)
+            if tally:
+                st.markdown("**NYC delegation:** " + "  ·  ".join(f"{k}: {n}" for k, n in tally.items()))
+            if rows_fd:
+                st.dataframe(pd.DataFrame(rows_fd), hide_index=True, use_container_width=True,
+                             height=min(480, 60 + 26 * len(rows_fd)))
+            else:
+                st.caption("None of NYC's House members appear on this roll-call (or the roster was unreachable).")
+            if fv.get("source_url"):
+                st.markdown(f"[Official House Clerk record]({fv['source_url']})")
 
 
 # ============================================================================

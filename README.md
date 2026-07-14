@@ -24,7 +24,7 @@ sources and an AI briefing/ideation layer.
 ### 🌐 All Levels (Albany + Washington)
 - **🏠 Find my reps** — type any NYC address and get the officials who represent it: City Council, State Senate, State Assembly, and U.S. House districts, each matched to its officeholder. (Council + House resolve with **no key**.)
 - **🏙️ State & Federal** — search **NY State** bills and track what **NYC's U.S. congressional delegation** is sponsoring/cosponsoring in Congress.
-- **🗳️ Votes & decisions** — NYC Council roll-calls and NY State floor/committee votes with per-member tallies.
+- **🗳️ Votes & decisions** — NYC Council roll-calls, NY State floor/committee votes, and **U.S. House roll-calls** (from the House Clerk) filtered to how NYC's delegation voted — all with per-member tallies.
 - **🔔 Activity (all levels)** — a durable watchlist across NYC/NYS/Federal bills with **Refresh & diff** to catch what moved.
 - **👤 Who governs NYC** — a unified directory across city, state, and federal.
 - **🗳️ Elections & terms** — a deterministic ballot calendar computed from each office's fixed cycle.
@@ -62,6 +62,17 @@ open the **⚙️ Data controls** panel, pick **All legislation + 2026**, and pr
 1. Push this repo to GitHub.
 2. On [share.streamlit.io](https://share.streamlit.io), point a new app at `app.py`.
 3. (Optional) add API keys as app **Secrets** or enter them in-app.
+
+### Scheduled packets (headless)
+`scheduled_packet.py` generates a District Packet unattended — Markdown + printable HTML — so a member's packet can land in your inbox every Monday:
+
+```bash
+python3 scheduled_packet.py --level nyc --member Hanks --year 2026 --out out/hanks
+# weekly cron (Mondays 08:07):
+# 7 8 * * 1  cd /path/to/repo && python3 scheduled_packet.py --level nyc --member Hanks --out out/hanks_$(date +\%Y\%m\%d)
+```
+
+Set `ANTHROPIC_API_KEY` for the AI "record at a glance" and `CONGRESS_API_KEY` for a federal member's sponsored bills.
 
 ---
 

@@ -119,6 +119,9 @@ the real gatekeepers for moving a bill): {committees}
 EVIDENCE — co-sponsorship coalitions from the loaded legislation (who actually works
 with whom; may be partial): {coalitions}
 
+COMPUTED SWING/PERSUADABLE MEMBERS (a data heuristic from sponsorship + committee
+membership — a starting list, not a claim about intentions; verify): {persuadables}
+
 Write a practical influence memo in Markdown with these sections:
 **The math** — what a majority looks like and where this issue likely splits (progressive / moderate / Republican, and cross-cutting caucuses).
 **Likely allies** — which blocs/profiles start with you and why (reason from the evidence and general dynamics; name specific members ONLY if the evidence or a web result supports it, else describe by bloc).
@@ -178,7 +181,7 @@ def talking_points(llm, issue, stance, facts=None, tone="Firm", n=6):
 
 
 def influence_memo(llm, issue, goal, factions_ref, coalitions=None, committees=None,
-                   allow_web=False):
+                   persuadables=None, allow_web=False):
     if not (llm and llm.ready):
         return ""
     prompt = INFLUENCE_PROMPT.format(
@@ -186,7 +189,9 @@ def influence_memo(llm, issue, goal, factions_ref, coalitions=None, committees=N
         factions=factions_ref,
         committees=json.dumps(committees or [], ensure_ascii=False)[:3500]
                    or "(not loaded)",
-        coalitions=json.dumps(coalitions or {}, ensure_ascii=False)[:4000])
+        coalitions=json.dumps(coalitions or {}, ensure_ascii=False)[:4000],
+        persuadables=json.dumps(persuadables or [], ensure_ascii=False)[:2500]
+                     or "(not computed)")
     try:
         return llm.complete(prompt, max_tokens=1600, system=COMMS_STYLE, allow_web=allow_web)
     except Exception as e:

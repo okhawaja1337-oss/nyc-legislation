@@ -1178,6 +1178,7 @@ import people as _people
 import packet as _packet
 import store as _store
 import messaging as _msg
+import analysis as _analysis
 try:
     from sources import nystate as _nys, congress as _cong
 except Exception:  # keep the app up even if a source module has an issue
@@ -1474,8 +1475,8 @@ sec_home, sec_leg, sec_levels, sec_people, sec_brief, sec_politics, sec_ask, sec
      "📰 Briefings & Ideas", "📣 Politics & Messaging", "💬 Ask", "ℹ️ About"])
 t_home, t_ask, t_about = sec_home, sec_ask, sec_about
 with sec_politics:
-    t_statement, t_rapid, t_influence = st.tabs(
-        ["📝 Statement Studio", "⚡ Rapid Response", "🧭 Influence Map"])
+    t_warroom, t_statement, t_rapid, t_influence = st.tabs(
+        ["🎯 Issue War Room", "📝 Statement Studio", "⚡ Rapid Response", "🧭 Influence Map"])
 with sec_leg:
     t_list, t_detail, t_hear, t_changes, t_over = st.tabs(
         ["📋 Legislation list", "📄 Bill detail", "📅 Hearings", "🔔 What changed", "📊 Overview"])
@@ -1484,8 +1485,9 @@ with sec_levels:
         ["🏠 Find my reps", "🏙️ State & Federal", "🗳️ Votes & decisions",
          "🔔 Activity (all levels)", "👤 Who governs NYC", "🗳️ Elections & terms"])
 with sec_people:
-    t_members, t_profile, t_dossier, t_compare, t_net, t_map = st.tabs(
-        ["👤 Members", "🪪 Deep profile", "📕 Dossier", "⚖️ Compare", "🤝 Coalitions", "🗺️ District map"])
+    t_members, t_wiki, t_profile, t_dossier, t_compare, t_net, t_map = st.tabs(
+        ["👤 Members", "📖 CM Wiki", "🪪 Deep profile", "📕 Dossier", "⚖️ Compare",
+         "🤝 Coalitions", "🗺️ District map"])
 with sec_brief:
     t_brief, t_packet, t_lab = st.tabs(["📰 Briefing Studio", "📦 District Packet", "💡 Policy Lab"])
 
@@ -3376,12 +3378,199 @@ with t_influence:
             with st.spinner("Analyzing the landscape…"):
                 coms_summary = [{"committee": c["committee"], "chair": c["chair"]}
                                 for c in committees_i] if committees_i else []
+                swing = {}
+                if bundle and any(r.get("_sponsor_names") for r in rows):
+                    swing = _analysis.swing_members(rows, issue_i.strip(), committees=committees_i, top=12)
+                    st.session_state["im_swing"] = swing
+                pers = [{"member": c["member"], "why": "; ".join(c["reasons"])}
+                        for c in swing.get("candidates", [])] if swing else []
                 st.session_state["im_out"] = _msg.influence_memo(
                     i_llm, issue_i.strip(), goal_i.strip(), _people.factions_reference_text(),
-                    coalitions=coal_evidence, committees=coms_summary, allow_web=allow_web)
+                    coalitions=coal_evidence, committees=coms_summary, persuadables=pers,
+                    allow_web=allow_web)
+    sw = st.session_state.get("im_swing")
+    if sw and sw.get("candidates"):
+        st.markdown("**🎯 Computed swing / persuadable members** "
+                    f"{'(committees: ' + ', '.join(sw['matched_committees']) + ')' if sw.get('matched_committees') else ''}")
+        st.dataframe(pd.DataFrame([{"Member": c["member"], "Score": c["score"],
+            "On committee": "✓" if c["on_committee"] else "", "Topic bills": c["topic_bills"],
+            "Why": "; ".join(c["reasons"])} for c in sw["candidates"]]),
+            hide_index=True, use_container_width=True, height=320)
+        st.caption(sw["note"])
     if st.session_state.get("im_out"):
         out = st.session_state["im_out"]
         st.markdown(f'<div class="brief">{_brief.md_to_html(out)}</div>', unsafe_allow_html=True)
         st.download_button("⬇️ Download memo", out, "influence_memo.md", "text/markdown", key="im_dl")
         st.caption("Strategic inference from coalition data + general dynamics — verify roster/vote specifics before "
                    "acting. Members named only where evidence or a source supports it.")
+
+
+# ============================================================================
+# 📖 CM WIKI — a personality-driven page per Council Member (grounded in record)
+# ============================================================================
+with t_wiki:
+    st.subheader("📖 Council Member Wiki")
+    st.caption("A living, record-driven page for each Council Member: their legislative persona, the decisions they've "
+               "made, who they build with, and an **estimated lean** on any issue. Everything is drawn from their "
+               "public sponsorship record — persona describes legislative *style* (not the person), and lean is an "
+               "inference from what they've sponsored, **not** a prediction of their vote.")
+    import profiles as _profiles
+    w_llm = _get_llm(smart=True)
+    if not (bundle and any(r.get("_sponsor_names") for r in rows)):
+        st.info("Load legislation **with sponsors** (⚙️ panel: *All legislation* + *Include sponsors*) so the Wiki can "
+                "read each member's record.")
+    else:
+        allm = list(_analysis.member_names(rows).keys())
+        who = st.selectbox("Council Member", allm, key="wiki_member")
+        if who:
+            mb = member_bills(rows, who)
+            stats = dossier_stats(mb, who)
+            _p3 = sum(1 for r in mb if who.split()[-1].lower() in (r.get("Prime Sponsor", "") or "").lower())
+            # header
+            st.markdown(f'<div class="card pcard"><h4>{_level_badge("NYC")} {who}</h4>'
+                        f'<div class="meta">NYC City Council · {stats.get("bills_on",0)} bills on record</div></div>',
+                        unsafe_allow_html=True)
+            m = st.columns(4)
+            m[0].metric("Bills on", stats.get("bills_on", 0))
+            m[1].metric("As prime", stats.get("as_prime", _p3))
+            m[2].metric("As co-sponsor", stats.get("as_cosponsor", 0))
+            m[3].metric("Passed/enacted", (stats.get("by_status") or {}).get("passed", 0))
+
+            st.markdown("### 🎭 Legislative persona")
+            if w_llm.ready:
+                pk = f"persona::{who}"
+                if pk not in st.session_state:
+                    with st.spinner("Reading the record…"):
+                        st.session_state[pk] = _profiles.persona(w_llm, who, stats)
+                if st.session_state.get(pk):
+                    st.markdown(f'<div class="brief">{_brief.md_to_html(st.session_state[pk])}</div>',
+                                unsafe_allow_html=True)
+                st.caption("AI characterization of legislative style from public sponsorship data — not personal "
+                           "traits, not an official position.")
+            else:
+                st.caption("Add your Anthropic key (⚙️ panel) for the AI persona. The facts below work without it.")
+
+            cwa, cwb = st.columns(2)
+            if stats.get("by_topic"):
+                cwa.markdown("**Policy focus**")
+                cwa.bar_chart(pd.Series(dict(list(stats["by_topic"].items())[:8])))
+            if stats.get("top_coalition"):
+                cwb.markdown("**Builds with**")
+                cwb.bar_chart(pd.Series(stats["top_coalition"]))
+
+            st.markdown("### 🗳️ Decisions — prime-sponsored bills")
+            pm = [r for r in mb if who.split()[-1].lower() in (r.get("Prime Sponsor", "") or "").lower()]
+            if pm:
+                st.dataframe(pd.DataFrame([{"File": r["File"], "Type": r["Type"], "Title": (r["Title"] or "")[:80],
+                    "Status": r["Status"], "Web Link": r["Web Link"]} for r in pm]),
+                    use_container_width=True, height=280,
+                    column_config={"Web Link": st.column_config.LinkColumn("Open", display_text="Open")})
+            else:
+                st.caption("No prime-sponsored bills in the loaded set.")
+
+            st.markdown("### 🎯 Estimate their lean on an issue")
+            iss = st.text_input("Issue / policy perspective", key="wiki_issue",
+                                placeholder="e.g. tenant protections · police oversight · e-bike safety")
+            if iss.strip():
+                est = _analysis.estimate_lean(rows, who, iss.strip())
+                sig = est["signal"]
+                badge = {"Likely supportive — leads on it": "b-green", "Leans supportive": "b-green",
+                         "Some engagement": "b-muted", "No record on this issue": "b-muted"}.get(est["lean"], "b-muted")
+                st.markdown(f'{_badge(est["lean"], badge)} &nbsp; confidence: **{est["confidence"]}**',
+                            unsafe_allow_html=True)
+                st.caption(f"From the record: {sig['on_topic']} related bill(s) — {sig['as_prime']} as prime, "
+                           f"{sig['as_cosponsor']} as co-sponsor. "
+                           + (f"e.g. {', '.join(sig['examples'])}." if sig["examples"] else ""))
+                st.warning("⚠️ " + est["caveat"])
+
+
+# ============================================================================
+# 🎯 ISSUE WAR ROOM — one topic → briefing + figures + swing + memo + statement
+# ============================================================================
+with t_warroom:
+    st.subheader("🎯 Issue War Room")
+    st.caption("One topic in, a full kit out: a briefing on what's moving, grounded figures to cite, the swing members "
+               "to work, an influence memo, and a draft statement — assembled in one pass and exportable together.")
+    wr_llm = _get_llm(smart=True)
+    topic = st.text_input("Issue / topic", key="wr_topic",
+                          placeholder="e.g. restoring NYPD headcount and responding to sexual-violence data")
+    wc = st.columns(2)
+    stance = wc[0].text_input("The member's stance (for the draft statement)", key="wr_stance")
+    goal = wc[1].text_input("The member's goal (for the influence memo)", key="wr_goal")
+    _grounded_figures_panel("wr")
+    if not wr_llm.ready:
+        st.info("💡 Add your **Anthropic key** (⚙️ panel) for the briefing, memo, and statement. Swing members and "
+                "figures work without it.")
+    if st.button("🚀 Assemble war room", type="primary", key="wr_go"):
+        if not topic.strip():
+            st.warning("Enter an issue/topic.")
+        else:
+            out = {}
+            with st.spinner("Assembling…"):
+                # 1) swing members (data only)
+                if bundle and any(r.get("_sponsor_names") for r in rows):
+                    coms = get_committees() if st.session_state.get("im_coms", True) else []
+                    out["swing"] = _analysis.swing_members(rows, topic.strip(), committees=coms, top=10)
+                # 2) briefing on the topic (from loaded bills)
+                if wr_llm.ready and bundle and rows:
+                    match = [r for r in rows if _analysis.topic_match(r, topic.strip())]
+                    ev = {"topic": topic.strip(), "matching_count": len(match),
+                          "sample": [{"File": r["File"], "Title": (r["Title"] or "")[:90], "Status": r["Status"],
+                                      "Prime": r.get("Prime Sponsor", "")} for r in match[:25]]}
+                    out["briefing"] = _brief.topic_briefing(wr_llm, topic.strip(), ev)
+                # 3) influence memo (with committees + swing)
+                if wr_llm.ready:
+                    coms_sum = [{"committee": c["committee"], "chair": c["chair"]}
+                                for c in (out.get("swing") and get_committees() or [])]
+                    coal_ev = {}
+                    if bundle and any(r.get("_sponsor_names") for r in rows):
+                        try:
+                            mm, dd, pp = coalition_matrix(rows, top_members=18)
+                            coal_ev = {"most_active": [{"member": x, "bills": dd.get(x, 0)} for x in mm[:18]]}
+                        except Exception:
+                            coal_ev = {}
+                    pers = [{"member": c["member"], "why": "; ".join(c["reasons"])}
+                            for c in out.get("swing", {}).get("candidates", [])]
+                    out["memo"] = _msg.influence_memo(wr_llm, topic.strip(), goal.strip(),
+                        _people.factions_reference_text(), coalitions=coal_ev, committees=coms_sum,
+                        persuadables=pers, allow_web=True)
+                # 4) draft statement
+                if wr_llm.ready:
+                    figs = st.session_state.get("wr_snap") or []
+                    factlist = [f["citation"] for f in figs]
+                    out["statement"] = _msg.draft_statement(wr_llm, topic.strip(),
+                        stance.strip() or f"The member's priorities on {topic.strip()}", factlist,
+                        fmt="Press statement", tone="Firm")
+            st.session_state["wr_out"] = out
+
+    wr = st.session_state.get("wr_out")
+    if wr:
+        if wr.get("swing", {}).get("candidates"):
+            st.markdown("### 🎯 Swing members to work")
+            st.dataframe(pd.DataFrame([{"Member": c["member"], "Score": c["score"],
+                "On committee": "✓" if c["on_committee"] else "", "Why": "; ".join(c["reasons"])}
+                for c in wr["swing"]["candidates"]]), hide_index=True, use_container_width=True, height=280)
+            st.caption(wr["swing"]["note"])
+        if wr.get("briefing"):
+            st.markdown("### 📰 Briefing")
+            st.markdown(f'<div class="brief">{_brief.md_to_html(wr["briefing"])}</div>', unsafe_allow_html=True)
+        if wr.get("memo"):
+            st.markdown("### 🧭 Influence memo")
+            st.markdown(f'<div class="brief">{_brief.md_to_html(wr["memo"])}</div>', unsafe_allow_html=True)
+        if wr.get("statement"):
+            st.markdown("### 📝 Draft statement")
+            st.markdown(f'<div class="brief">{_brief.md_to_html(wr["statement"])}</div>', unsafe_allow_html=True)
+        # combined export
+        parts = [f"# Issue War Room — {topic.strip()}", ""]
+        if wr.get("briefing"): parts += ["## Briefing", wr["briefing"], ""]
+        if wr.get("swing", {}).get("candidates"):
+            parts += ["## Swing members to work"]
+            parts += [f"- **{c['member']}** (score {c['score']}) — {'; '.join(c['reasons'])}"
+                      for c in wr["swing"]["candidates"]]
+            parts += [""]
+        if wr.get("memo"): parts += ["## Influence memo", wr["memo"], ""]
+        if wr.get("statement"): parts += ["## Draft statement", wr["statement"], ""]
+        combined = "\n".join(parts)
+        st.download_button("⬇️ Download the whole kit (Markdown)", combined,
+                           f"war_room_{topic.strip()[:30].replace(' ','_')}.md", "text/markdown", key="wr_dl")
+        st.caption("Drafts and estimates are decision-support — verify figures and confirm positions before acting.")

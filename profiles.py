@@ -40,6 +40,40 @@ def glance(llm, level, name, data):
         return ""
 
 
+PERSONA_PROMPT = """Write a short "legislative persona" of this NYC Council Member for
+an internal wiki — a characterization of their LEGISLATIVE STYLE ONLY, drawn
+strictly from the DATA (their sponsorship volume, prime-vs-cosponsor balance,
+topic mix, outcomes, and frequent partners).
+
+HARD RULES:
+- Characterize legislative behavior, not the person. NO personal traits, no
+  temperament, no biography, no motives, no party/ideology labels unless the
+  data shows it, no praise or criticism.
+- Use ONLY the data. If it's thin, say so. Invent nothing.
+- Mark interpretation as inference ("the record suggests…").
+
+Write ~120 words, plus a final line: "**In three words:** w1 · w2 · w3" capturing
+their legislative style (e.g., "coalition-builder", "housing-focused",
+"prolific", "committee-anchored"). Nonpartisan, plain.
+
+MEMBER: {name}
+DATA (JSON): {data}
+"""
+
+
+def persona(llm, name, stats):
+    """AI legislative-persona for the wiki; empty string if no key."""
+    if not (llm and llm.ready):
+        return ""
+    import json as _json
+    try:
+        return llm.complete(PERSONA_PROMPT.format(name=name,
+                            data=_json.dumps(stats, ensure_ascii=False)[:6000]),
+                            max_tokens=420, system=PROFILE_STYLE)
+    except Exception:
+        return ""
+
+
 def council_facts(name, stats, district=None, committees=None):
     """Shape a NYC Council member's facts from dossier stats + optional extras."""
     s = stats or {}

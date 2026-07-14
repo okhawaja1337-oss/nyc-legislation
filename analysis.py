@@ -93,6 +93,79 @@ def _partner_breadth(rows, member):
     return len(partners)
 
 
+def policy_topics(rows):
+    """Distinct policy topics present in the loaded set (from Topic tags)."""
+    s = set()
+    for r in rows:
+        for p in (r.get("Topic tags") or "").split("; "):
+            if p.strip():
+                s.add(p.strip())
+    return sorted(s)
+
+
+def engagement_matrix(rows, top_members=25, topics=None):
+    """Member × topic engagement counts (bills a member sponsored per topic).
+
+    Returns (members, topics, matrix{member:{topic:count}}). Members are the most
+    active first so the grid leads with the people who legislate the most.
+    """
+    topics = topics or policy_topics(rows)
+    members = list(member_names(rows).keys())[:top_members]
+    mat = {m: {t: 0 for t in topics} for m in members}
+    for m in members:
+        for r in _member_rows(rows, m):
+            for p in (r.get("Topic tags") or "").split("; "):
+                p = p.strip()
+                if p in mat[m]:
+                    mat[m][p] += 1
+    return members, topics, mat
+
+
+def vote_signal(vote_events, member):
+    """Tally how a member actually voted across roll-call events (from fetch_votes).
+
+    vote_events is a list of {votes:[{Member,Vote}], ...}. Returns aye/nay/other.
+    """
+    last = _last(member)
+    aye = nay = other = 0
+    for ev in vote_events or []:
+        for v in ev.get("votes", []) or []:
+            nm = (v.get("Member") or "")
+            if last not in nm.lower():
+                continue
+            val = (v.get("Vote") or "").lower()
+            if any(w in val for w in ("affirm", "aye", "yes")):
+                aye += 1
+            elif any(w in val for w in ("negativ", "nay", "no ")):
+                nay += 1
+            else:
+                other += 1
+    return {"aye": aye, "nay": nay, "other": other, "total": aye + nay + other}
+
+
+def blend_lean(sponsor_estimate, vote_counts):
+    """Combine the sponsorship estimate with any ACTUAL votes (votes win when present).
+
+    Returns an updated estimate dict with a `blended` lean + `vote_counts`.
+    """
+    est = dict(sponsor_estimate)
+    est["vote_counts"] = vote_counts
+    v = vote_counts or {}
+    total = v.get("total", 0)
+    if total:
+        if v["aye"] and not v["nay"]:
+            blended = f"Supportive on the record — voted YES on {v['aye']} related bill(s)"
+        elif v["nay"] and not v["aye"]:
+            blended = f"Opposed on the record — voted NO on {v['nay']} related bill(s)"
+        else:
+            blended = f"Mixed voting record — {v['aye']} yes / {v['nay']} no on related bills"
+        est["blended"] = blended
+        est["confidence"] = "higher (includes actual votes)"
+    else:
+        est["blended"] = est.get("lean")
+    return est
+
+
 def relevant_committee_members(committees, topic):
     """Members of committees whose name relates to the topic (from get_committees())."""
     t = (topic or "").lower()

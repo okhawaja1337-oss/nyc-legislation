@@ -30,7 +30,8 @@ sources and an AI briefing/ideation layer.
 - **🗳️ Elections & terms** — a deterministic ballot calendar computed from each office's fixed cycle.
 
 ### 👥 People & Coalitions
-- **📖 CM Wiki** — a personality-driven page per Council Member: an AI *legislative persona* (style only, grounded in the record), their prime-sponsored decisions, policy focus and coalition, and a tool that **estimates their lean on any issue** from their sponsorship record (a labeled inference, not a vote prediction).
+- **📖 CM Wiki** — a personality-driven page per Council Member: an AI *legislative persona* (style only, grounded in the record), their prime-sponsored decisions, policy focus and coalition, and a tool that **estimates their lean on any issue** from their sponsorship record (a labeled inference, not a vote prediction) — optionally **blended with how they actually voted** on related roll-calls.
+- **📊 Policy Grid** — a member × policy-area heatmap: every member's whole topic portfolio at once, plus who owns each issue.
 - **Members, Dossier, Compare** — a member's record by year, prime vs. co-sponsor, outcomes, and head-to-head comparison.
 - **🪪 Deep profile** — one polished page per official at any level (facts, committees, record, AI "record at a glance").
 - **🤝 Coalitions** — the co-sponsorship network and strongest partnerships.

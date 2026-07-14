@@ -1485,9 +1485,9 @@ with sec_levels:
         ["🏠 Find my reps", "🏙️ State & Federal", "🗳️ Votes & decisions",
          "🔔 Activity (all levels)", "👤 Who governs NYC", "🗳️ Elections & terms"])
 with sec_people:
-    t_members, t_wiki, t_profile, t_dossier, t_compare, t_net, t_map = st.tabs(
-        ["👤 Members", "📖 CM Wiki", "🪪 Deep profile", "📕 Dossier", "⚖️ Compare",
-         "🤝 Coalitions", "🗺️ District map"])
+    t_members, t_wiki, t_grid, t_profile, t_dossier, t_compare, t_net, t_map = st.tabs(
+        ["👤 Members", "📖 CM Wiki", "📊 Policy Grid", "🪪 Deep profile", "📕 Dossier",
+         "⚖️ Compare", "🤝 Coalitions", "🗺️ District map"])
 with sec_brief:
     t_brief, t_packet, t_lab = st.tabs(["📰 Briefing Studio", "📦 District Packet", "💡 Policy Lab"])
 
@@ -3471,16 +3471,35 @@ with t_wiki:
             st.markdown("### 🎯 Estimate their lean on an issue")
             iss = st.text_input("Issue / policy perspective", key="wiki_issue",
                                 placeholder="e.g. tenant protections · police oversight · e-bike safety")
+            blend_votes = st.checkbox("Also check how they actually voted on related bills (slower — pulls "
+                                      "roll-calls)", key="wiki_blend")
             if iss.strip():
                 est = _analysis.estimate_lean(rows, who, iss.strip())
                 sig = est["signal"]
-                badge = {"Likely supportive — leads on it": "b-green", "Leans supportive": "b-green",
-                         "Some engagement": "b-muted", "No record on this issue": "b-muted"}.get(est["lean"], "b-muted")
-                st.markdown(f'{_badge(est["lean"], badge)} &nbsp; confidence: **{est["confidence"]}**',
+                if blend_votes:
+                    topic_bills = [r for r in mb if _analysis.topic_match(r, iss.strip())]
+                    voted = [r for r in topic_bills
+                             if any(w in (r.get("Status", "") or "").lower()
+                                    for w in ("enact", "adopt", "approv", "passed"))][:8]
+                    vevents = []
+                    with st.spinner(f"Pulling roll-calls for {len(voted)} related bill(s)…"):
+                        for r in voted:
+                            try:
+                                vevents += fetch_votes(r["MatterId"])
+                            except Exception:
+                                pass
+                    vc = _analysis.vote_signal(vevents, who)
+                    est = _analysis.blend_lean(est, vc)
+                lean_label = est.get("blended", est["lean"])
+                is_support = any(w in lean_label.lower() for w in ("support", "yes", "leads"))
+                badge = "b-green" if is_support else ("b-fed" if "oppos" in lean_label.lower() else "b-muted")
+                st.markdown(f'{_badge(lean_label, badge)} &nbsp; confidence: **{est["confidence"]}**',
                             unsafe_allow_html=True)
-                st.caption(f"From the record: {sig['on_topic']} related bill(s) — {sig['as_prime']} as prime, "
-                           f"{sig['as_cosponsor']} as co-sponsor. "
-                           + (f"e.g. {', '.join(sig['examples'])}." if sig["examples"] else ""))
+                st.caption(f"Sponsorship: {sig['on_topic']} related bill(s) — {sig['as_prime']} prime, "
+                           f"{sig['as_cosponsor']} co-sponsor. "
+                           + (f"e.g. {', '.join(sig['examples'])}. " if sig["examples"] else "")
+                           + (f"Actual votes on related bills: {est['vote_counts']['aye']} yes / "
+                              f"{est['vote_counts']['nay']} no." if est.get("vote_counts") else ""))
                 st.warning("⚠️ " + est["caveat"])
 
 
@@ -3574,3 +3593,52 @@ with t_warroom:
         st.download_button("⬇️ Download the whole kit (Markdown)", combined,
                            f"war_room_{topic.strip()[:30].replace(' ','_')}.md", "text/markdown", key="wr_dl")
         st.caption("Drafts and estimates are decision-support — verify figures and confirm positions before acting.")
+
+
+# ============================================================================
+# 📊 POLICY GRID — every member × every policy area, at a glance
+# ============================================================================
+with t_grid:
+    st.subheader("📊 Policy Grid — member × policy area")
+    st.caption("Each member's whole topic portfolio at once: how many bills they've sponsored in every policy area. "
+               "Darker = more bills. The clearest single view of who owns which issue.")
+    if not (bundle and any(r.get("_sponsor_names") for r in rows)):
+        st.info("Load legislation **with sponsors** (⚙️ panel) so the grid can read every member's record.")
+    else:
+        topn = st.slider("Members to show (most active first)", 8, 40, 20, key="grid_top")
+        members_g, topics_g, mat = _analysis.engagement_matrix(rows, top_members=topn)
+        if not members_g or not topics_g:
+            st.warning("No topic data in the loaded set yet.")
+        else:
+            def _short(n):
+                return n.split()[-1] if n.split() else n
+            idx, seen = [], {}
+            for m in members_g:
+                seen[_short(m)] = seen.get(_short(m), 0) + 1
+            for m in members_g:
+                idx.append(m if seen[_short(m)] > 1 else _short(m))
+            M = pd.DataFrame([[mat[m][t] for t in topics_g] for m in members_g], index=idx, columns=topics_g)
+            mx = max(1, int(M.values.max()))
+
+            def _cell(v):
+                if not v:
+                    return "background-color:#0a0f1c;color:#26344d"
+                t = v / mx
+                rr = int(15 + t * (59 - 15)); gg = int(26 + t * (130 - 26)); bb = int(50 + t * (246 - 50))
+                return f"background-color:rgb({rr},{gg},{bb});color:#eaf1fb"
+            styled = M.style
+            styled = (styled.map(_cell) if hasattr(styled, "map") else styled.applymap(_cell))
+            styled = styled.format(lambda v: "" if not v else int(v))
+            st.dataframe(styled, use_container_width=True, height=min(720, 80 + 26 * len(members_g)))
+            st.caption(f"Darkest cell = {mx} bills. Columns are the auto-tagged policy topics; rows are the most "
+                       "active sponsors. Click a column header to sort.")
+            # who owns each topic
+            leaders = []
+            for t in topics_g:
+                best = max(members_g, key=lambda m: mat[m][t])
+                if mat[best][t]:
+                    leaders.append({"Policy area": t, "Most active member": best, "Bills": mat[best][t]})
+            if leaders:
+                st.markdown("**Who owns each issue (most bills sponsored):**")
+                st.dataframe(pd.DataFrame(sorted(leaders, key=lambda x: -x["Bills"])),
+                             hide_index=True, use_container_width=True, height=300)

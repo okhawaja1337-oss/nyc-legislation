@@ -40,6 +40,15 @@ sources and an AI briefing/ideation layer.
 - **📦 District Packet** — a one-click printable bundle: a member's profile + their bills + upcoming hearings.
 - **💡 Policy Lab** — brainstorm new laws: structured concepts (mechanism, lead agency, supporters/opponents, fiscal & legal flags, precedent, PR angle, draft intro summary), expandable to a one-page memo.
 
+### 📣 Politics & Messaging
+The member's own communications & influence layer — **advocacy in their voice**, kept separate from the neutral-analysis tools.
+- **📝 Statement Studio** — press statements, reporter quotes, floor remarks, newsletter blurbs, social posts, or talking points, in a measured/firm/urgent register, with a built-in style anchor.
+- **⚡ Rapid Response** — a grounded, on-message reply to a statement you supply (the tool never manufactures anyone's quote).
+- **🧭 Influence Map** — where a majority comes from on an issue across the progressive wing, moderates, and Republican minority, grounded in the co-sponsorship coalitions.
+- **📊 Grounded figures** — pull live NYPD complaint counts by category (NYC Open Data) for a date window, each returned with its source citation, so statements cite real, verifiable numbers instead of guesses.
+
+> Integrity guardrails: never invents statistics or another official's words, tags unknown figures `[verify: source]`, criticizes record not persons, and hardcodes no caucus rosters. Drafts are decision-support — confirm any figure before release.
+
 ### 💬 Ask
 An AI chat over the loaded bills **and** NYC government generally — the City Charter, Administrative Code, ULURP, the budget process — with optional web search for citations.
 

@@ -1129,6 +1129,7 @@ import policylab as _lab
 import people as _people
 import packet as _packet
 import store as _store
+import messaging as _msg
 try:
     from sources import nystate as _nys, congress as _cong
 except Exception:  # keep the app up even if a source module has an issue
@@ -1137,6 +1138,10 @@ try:
     from sources import housevotes as _housevotes
 except Exception:
     _housevotes = None
+try:
+    from sources import opendata as _od
+except Exception:
+    _od = None
 
 st.set_page_config(page_title="NYC Legislative Intelligence", layout="wide", initial_sidebar_state="collapsed")
 NYC_TOKEN = "Uvxb0j9syjm3aI8h46DhQvnX5skN4aSUL0x_Ee3ty9M.ew0KICAiVmVyc2lvbiI6IDEsDQogICJOYW1lIjogIk5ZQyByZWFkIHRva2VuIDIwMTcxMDI2IiwNCiAgIkRhdGUiOiAiMjAxNy0xMC0yNlQxNjoyNjo1Mi42ODM0MDYtMDU6MDAiLA0KICAiV3JpdGUiOiBmYWxzZQ0KfQ"
@@ -1411,10 +1416,13 @@ elif load:
 # Grouped, two-level navigation: 7 clean sections, each with focused sub-tabs.
 # (Streamlit tab containers carry their own path, so the `with t_x:` blocks
 #  below can stay where they are and still render inside the right section.)
-sec_home, sec_leg, sec_levels, sec_people, sec_brief, sec_ask, sec_about = st.tabs(
+sec_home, sec_leg, sec_levels, sec_people, sec_brief, sec_politics, sec_ask, sec_about = st.tabs(
     ["🏛️ Command Center", "📜 Legislation", "🌐 All Levels", "👥 People & Coalitions",
-     "📰 Briefings & Ideas", "💬 Ask", "ℹ️ About"])
+     "📰 Briefings & Ideas", "📣 Politics & Messaging", "💬 Ask", "ℹ️ About"])
 t_home, t_ask, t_about = sec_home, sec_ask, sec_about
+with sec_politics:
+    t_statement, t_rapid, t_influence = st.tabs(
+        ["📝 Statement Studio", "⚡ Rapid Response", "🧭 Influence Map"])
 with sec_leg:
     t_list, t_detail, t_hear, t_changes, t_over = st.tabs(
         ["📋 Legislation list", "📄 Bill detail", "📅 Hearings", "🔔 What changed", "📊 Overview"])
@@ -2736,6 +2744,50 @@ def _render_profile(profiles_mod, p_llm, level, name, facts, raw):
         st.markdown(f"[Official page]({src})")
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def crime_snapshot_cached(since, until, cats, dataset, token):
+    if not _od:
+        return []
+    return _od.crime_snapshot(since, until, categories=list(cats) or None,
+                              dataset=dataset, token=(token or None))
+
+
+def _grounded_figures_panel(key_prefix):
+    """Reusable expander: pull sourced NYC crime figures to cite in messaging."""
+    with st.expander("📊 Grounded figures — pull live NYC crime data to cite"):
+        if not _od:
+            st.caption("Live data module unavailable."); return
+        st.caption("Report/complaint counts from **NYC Open Data (NYPD Complaint Data)**, each returned with its "
+                   "source and date window so you can cite it honestly. These are *reported complaints* (not "
+                   "convictions) and recent periods are provisional. Copy the lines you want into the facts box above.")
+        gc = st.columns(3)
+        today = _dt.date.today()
+        since = gc[0].date_input("From", _dt.date(today.year, 1, 1), key=f"{key_prefix}_from")
+        until = gc[1].date_input("To", today, key=f"{key_prefix}_to")
+        dataset = gc[2].selectbox("Dataset", ["historic", "current"],
+            format_func=lambda d: "Historic (all years)" if d == "historic" else "Current YTD (freshest)",
+            key=f"{key_prefix}_ds")
+        cats = st.multiselect("Categories", list(_od.CATEGORY_MATCH.keys()),
+                              default=["Rape", "Sex crimes (other)"], key=f"{key_prefix}_cats")
+        token = st.text_input("Socrata app token (optional — raises the rate limit)",
+                              st.session_state.get("socrata_token", ""), type="password",
+                              key=f"{key_prefix}_token", help="Free at data.cityofnewyork.us (Developer Settings)")
+        st.session_state["socrata_token"] = token
+        if st.button("Fetch figures", key=f"{key_prefix}_fetch"):
+            with st.spinner("Querying NYC Open Data…"):
+                try:
+                    st.session_state[f"{key_prefix}_snap"] = crime_snapshot_cached(
+                        str(since), str(until), tuple(cats), dataset, token.strip())
+                except Exception as e:
+                    st.error(f"{type(e).__name__}: {e}")
+        snap = st.session_state.get(f"{key_prefix}_snap")
+        if snap:
+            for r in snap:
+                st.code(r["citation"], language="text")
+        elif snap == []:
+            st.info("No figures returned (the dataset may be unreachable, or no matches in that window).")
+
+
 # ============================================================================
 # 🏠 FIND MY REPS — address → every official who represents it
 # ============================================================================
@@ -3130,3 +3182,127 @@ with t_packet:
                     key="pk_xlsx", use_container_width=True)
         except Exception:
             dc[2].caption("Excel export unavailable.")
+
+
+# ============================================================================
+# 📣 POLITICS & MESSAGING — the member's own communications & influence layer
+# (advocacy in the member's voice; grounded, never fabricates stats or quotes)
+# ============================================================================
+_POLI_NOTE = ("This layer writes in **the member's own voice** — it's advocacy, not the app's neutral analysis. "
+              "It never invents statistics or quotes: give it the verified facts and it builds the message around "
+              "them, flagging anything to confirm as `[verify]`.")
+
+with t_statement:
+    st.subheader("📝 Statement Studio")
+    st.caption(_POLI_NOTE)
+    s_llm = _get_llm(smart=True)
+    if not s_llm.ready:
+        st.info("💡 Add your **Anthropic key** in the ⚙️ controls panel to draft statements.")
+    with st.expander("✨ Style anchor — the register these drafts mirror"):
+        st.markdown(f"> {_msg.EXEMPLAR}")
+        st.caption("Firm, values-forward, no invented numbers. Toggle it off below to use a neutral register.")
+    issue = st.text_input("Issue / topic", placeholder="e.g. NYPD headcount and the response to sexual-violence data",
+                          key="ss_issue")
+    stance = st.text_area("What the member wants to convey (their position)", height=80, key="ss_stance",
+        placeholder="e.g. We won budget priorities but must restore NYPD headcount; sexual violence can't be "
+                    "reframed by statistics — survivors deserve urgency and real action.")
+    facts = st.text_area("Verified facts the member can cite (one per line — used for ALL specifics)", height=90,
+        key="ss_facts", placeholder="Budget restored X (confirm)\nNYPD headcount down vs. promise (confirm figure)\n"
+                                     "Reported cases / category change — cite DCJS/NYPD source")
+    _grounded_figures_panel("ss")
+    c = st.columns(3)
+    fmt = c[0].selectbox("Format", list(_msg.FORMATS.keys()), key="ss_fmt")
+    tone = c[1].selectbox("Tone", list(_msg.TONES.keys()), index=1, key="ss_tone")
+    use_ex = c[2].checkbox("Mirror the style anchor", value=True, key="ss_ex")
+    if st.button("Draft it", type="primary", key="ss_go"):
+        if not s_llm.ready:
+            st.warning("Add your Anthropic key in the ⚙️ controls panel first.")
+        elif not issue.strip():
+            st.warning("Enter an issue/topic.")
+        else:
+            with st.spinner("Drafting…"):
+                factlist = [x for x in facts.splitlines() if x.strip()]
+                st.session_state["ss_out"] = _msg.draft_statement(
+                    s_llm, issue.strip(), stance.strip(), factlist, fmt=fmt, tone=tone, use_exemplar=use_ex)
+    if st.session_state.get("ss_out"):
+        out = st.session_state["ss_out"]
+        st.markdown(f'<div class="brief">{_brief.md_to_html(out)}</div>', unsafe_allow_html=True)
+        st.code(out, language="markdown")
+        st.download_button("⬇️ Download", out, "statement.md", "text/markdown", key="ss_dl")
+        st.caption("Draft for staff review. Confirm any `[verify]` figure against DCJS / NYPD / OMB / IBO before release.")
+
+with t_rapid:
+    st.subheader("⚡ Rapid Response")
+    st.caption(_POLI_NOTE + "  \nPaste what was said (you supply it — the tool never manufactures anyone's quote) "
+               "and get a grounded, on-message reply that answers the substance.")
+    r_llm = _get_llm(smart=True)
+    if not r_llm.ready:
+        st.info("💡 Add your **Anthropic key** in the ⚙️ controls panel to use Rapid Response.")
+    claim = st.text_area("What was said (the claim to answer)", height=90, key="rr_claim",
+        placeholder="e.g. A public official argues a rise in a crime category is a statistical technicality.")
+    who = st.text_input("Said by (role — optional)", key="rr_who", placeholder="e.g. the Mayor")
+    position = st.text_area("The member's position", height=70, key="rr_pos")
+    rfacts = st.text_area("Verified facts to cite (one per line)", height=70, key="rr_facts")
+    _grounded_figures_panel("rr")
+    rc = st.columns(2)
+    rfmt = rc[0].selectbox("Format", list(_msg.FORMATS.keys()), index=1, key="rr_fmt")
+    rtone = rc[1].selectbox("Tone", list(_msg.TONES.keys()), index=1, key="rr_tone")
+    if st.button("Draft response", type="primary", key="rr_go"):
+        if not r_llm.ready:
+            st.warning("Add your Anthropic key first.")
+        elif not claim.strip():
+            st.warning("Paste the statement you're responding to.")
+        else:
+            with st.spinner("Drafting response…"):
+                st.session_state["rr_out"] = _msg.rebuttal(
+                    r_llm, claim.strip(), position.strip(), who=who.strip(),
+                    facts=[x for x in rfacts.splitlines() if x.strip()], fmt=rfmt, tone=rtone)
+    if st.session_state.get("rr_out"):
+        out = st.session_state["rr_out"]
+        st.markdown(f'<div class="brief">{_brief.md_to_html(out)}</div>', unsafe_allow_html=True)
+        st.code(out, language="markdown")
+        st.download_button("⬇️ Download", out, "response.md", "text/markdown", key="rr_dl")
+        st.caption("Answers the position and the record — not the person. Verify any figure before release.")
+
+with t_influence:
+    st.subheader("🧭 Influence Map")
+    st.caption("Where a majority comes from on a given issue — across the progressive wing, the moderates, and the "
+               "Republican minority (and cross-cutting caucuses), grounded in who actually co-sponsors with whom.")
+    i_llm = _get_llm(smart=True)
+    with st.expander("🏛️ The Council's blocs (structure — verify current rosters)"):
+        for f in _people.COUNCIL_FACTIONS:
+            st.markdown(f"- **{f['name']}** ({f['kind']}) — {f['note']}")
+    issue_i = st.text_input("Issue", key="im_issue", placeholder="e.g. restoring NYPD headcount in the next budget")
+    goal_i = st.text_input("The member's goal", key="im_goal",
+                           placeholder="e.g. build a veto-proof majority for a headcount restoration")
+    allow_web = st.checkbox("🌐 Allow web search (current caucus rosters, recent positions)", value=True, key="im_web")
+    coal_evidence = {}
+    if bundle and any(r.get("_sponsor_names") for r in rows):
+        try:
+            members_c, deg_c, pair_c = coalition_matrix(rows, top_members=20)
+            coal_evidence = {"most_active": [{"member": m, "bills": deg_c.get(m, 0)} for m in members_c[:20]],
+                             "top_partnerships": sorted(
+                                 ([{"a": a, "b": b, "shared": w} for (a, b), w in pair_c.items()]),
+                                 key=lambda x: -x["shared"])[:20]}
+        except Exception:
+            coal_evidence = {}
+        st.caption("✓ Using co-sponsorship coalitions from the loaded legislation as evidence.")
+    else:
+        st.caption("Load legislation **with sponsors** (⚙️ panel) to ground this in real co-sponsorship coalitions; "
+                   "it still works from general dynamics without them.")
+    if st.button("Build influence memo", type="primary", key="im_go"):
+        if not i_llm.ready:
+            st.warning("Add your Anthropic key in the ⚙️ controls panel first.")
+        elif not issue_i.strip():
+            st.warning("Enter an issue.")
+        else:
+            with st.spinner("Analyzing the landscape…"):
+                st.session_state["im_out"] = _msg.influence_memo(
+                    i_llm, issue_i.strip(), goal_i.strip(), _people.factions_reference_text(),
+                    coalitions=coal_evidence, allow_web=allow_web)
+    if st.session_state.get("im_out"):
+        out = st.session_state["im_out"]
+        st.markdown(f'<div class="brief">{_brief.md_to_html(out)}</div>', unsafe_allow_html=True)
+        st.download_button("⬇️ Download memo", out, "influence_memo.md", "text/markdown", key="im_dl")
+        st.caption("Strategic inference from coalition data + general dynamics — verify roster/vote specifics before "
+                   "acting. Members named only where evidence or a source supports it.")

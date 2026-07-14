@@ -213,6 +213,42 @@ def match_reps(districts, federal_delegation=None, nys_members=None):
     return rows
 
 
+# ---------------------------------------------------------------------------
+# NYC Council political structure — for messaging/influence analysis.
+# STRUCTURE ONLY (these blocs exist and are durable); we intentionally do NOT
+# hardcode who belongs to each — rosters shift, and a wrong roster in a political
+# tool is worse than none. Current membership should be verified live / via web.
+# ---------------------------------------------------------------------------
+COUNCIL_FACTIONS = [
+    {"name": "Democratic majority", "kind": "Party",
+     "note": "A large Democratic supermajority controls the Council; the Speaker leads it. "
+             "It is NOT monolithic — progressives and moderates diverge, especially on public safety and budget."},
+    {"name": "Progressive Caucus", "kind": "Ideological bloc",
+     "note": "The Council's organized progressive wing; tends left on policing, housing, and immigration."},
+    {"name": "Common Sense Caucus", "kind": "Ideological bloc",
+     "note": "A moderate/centrist bloc (moderate Democrats and Republicans) that leans toward public-safety and "
+             "business-friendly positions."},
+    {"name": "Republican minority", "kind": "Party",
+     "note": "A small but cohesive Republican delegation (Staten Island and outer-borough conservative districts); "
+             "strong on policing and often opposed to progressive measures."},
+    {"name": "Black, Latino & Asian Caucus (BLAC)", "kind": "Identity caucus",
+     "note": "Cross-ideological; focuses on equity, representation, and communities of color."},
+    {"name": "Women's Caucus", "kind": "Identity caucus",
+     "note": "Cross-party; often leads on gender-based violence, health, and family policy."},
+    {"name": "LGBTQIA+ Caucus", "kind": "Identity caucus", "note": "Advances LGBTQ+ priorities."},
+    {"name": "Jewish Caucus", "kind": "Identity caucus", "note": "Cross-ideological."},
+]
+
+
+def factions_reference_text():
+    """A compact text block describing the Council's blocs, for prompt context."""
+    lines = []
+    for f in COUNCIL_FACTIONS:
+        lines.append(f"- {f['name']} ({f['kind']}): {f['note']}")
+    lines.append("- Note: caucus rosters change; verify current membership before naming individuals.")
+    return "\n".join(lines)
+
+
 def branch_summary():
     """Counts of offices by level and branch — for the Command Center tiles."""
     out = {}

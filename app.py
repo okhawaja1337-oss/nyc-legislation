@@ -1138,6 +1138,10 @@ try:
     from sources import housevotes as _housevotes
 except Exception:
     _housevotes = None
+try:
+    from sources import opendata as _od
+except Exception:
+    _od = None
 
 st.set_page_config(page_title="NYC Legislative Intelligence", layout="wide", initial_sidebar_state="collapsed")
 NYC_TOKEN = "Uvxb0j9syjm3aI8h46DhQvnX5skN4aSUL0x_Ee3ty9M.ew0KICAiVmVyc2lvbiI6IDEsDQogICJOYW1lIjogIk5ZQyByZWFkIHRva2VuIDIwMTcxMDI2IiwNCiAgIkRhdGUiOiAiMjAxNy0xMC0yNlQxNjoyNjo1Mi42ODM0MDYtMDU6MDAiLA0KICAiV3JpdGUiOiBmYWxzZQ0KfQ"
@@ -2740,6 +2744,50 @@ def _render_profile(profiles_mod, p_llm, level, name, facts, raw):
         st.markdown(f"[Official page]({src})")
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def crime_snapshot_cached(since, until, cats, dataset, token):
+    if not _od:
+        return []
+    return _od.crime_snapshot(since, until, categories=list(cats) or None,
+                              dataset=dataset, token=(token or None))
+
+
+def _grounded_figures_panel(key_prefix):
+    """Reusable expander: pull sourced NYC crime figures to cite in messaging."""
+    with st.expander("📊 Grounded figures — pull live NYC crime data to cite"):
+        if not _od:
+            st.caption("Live data module unavailable."); return
+        st.caption("Report/complaint counts from **NYC Open Data (NYPD Complaint Data)**, each returned with its "
+                   "source and date window so you can cite it honestly. These are *reported complaints* (not "
+                   "convictions) and recent periods are provisional. Copy the lines you want into the facts box above.")
+        gc = st.columns(3)
+        today = _dt.date.today()
+        since = gc[0].date_input("From", _dt.date(today.year, 1, 1), key=f"{key_prefix}_from")
+        until = gc[1].date_input("To", today, key=f"{key_prefix}_to")
+        dataset = gc[2].selectbox("Dataset", ["historic", "current"],
+            format_func=lambda d: "Historic (all years)" if d == "historic" else "Current YTD (freshest)",
+            key=f"{key_prefix}_ds")
+        cats = st.multiselect("Categories", list(_od.CATEGORY_MATCH.keys()),
+                              default=["Rape", "Sex crimes (other)"], key=f"{key_prefix}_cats")
+        token = st.text_input("Socrata app token (optional — raises the rate limit)",
+                              st.session_state.get("socrata_token", ""), type="password",
+                              key=f"{key_prefix}_token", help="Free at data.cityofnewyork.us (Developer Settings)")
+        st.session_state["socrata_token"] = token
+        if st.button("Fetch figures", key=f"{key_prefix}_fetch"):
+            with st.spinner("Querying NYC Open Data…"):
+                try:
+                    st.session_state[f"{key_prefix}_snap"] = crime_snapshot_cached(
+                        str(since), str(until), tuple(cats), dataset, token.strip())
+                except Exception as e:
+                    st.error(f"{type(e).__name__}: {e}")
+        snap = st.session_state.get(f"{key_prefix}_snap")
+        if snap:
+            for r in snap:
+                st.code(r["citation"], language="text")
+        elif snap == []:
+            st.info("No figures returned (the dataset may be unreachable, or no matches in that window).")
+
+
 # ============================================================================
 # 🏠 FIND MY REPS — address → every official who represents it
 # ============================================================================
@@ -3161,6 +3209,7 @@ with t_statement:
     facts = st.text_area("Verified facts the member can cite (one per line — used for ALL specifics)", height=90,
         key="ss_facts", placeholder="Budget restored X (confirm)\nNYPD headcount down vs. promise (confirm figure)\n"
                                      "Reported cases / category change — cite DCJS/NYPD source")
+    _grounded_figures_panel("ss")
     c = st.columns(3)
     fmt = c[0].selectbox("Format", list(_msg.FORMATS.keys()), key="ss_fmt")
     tone = c[1].selectbox("Tone", list(_msg.TONES.keys()), index=1, key="ss_tone")
@@ -3194,6 +3243,7 @@ with t_rapid:
     who = st.text_input("Said by (role — optional)", key="rr_who", placeholder="e.g. the Mayor")
     position = st.text_area("The member's position", height=70, key="rr_pos")
     rfacts = st.text_area("Verified facts to cite (one per line)", height=70, key="rr_facts")
+    _grounded_figures_panel("rr")
     rc = st.columns(2)
     rfmt = rc[0].selectbox("Format", list(_msg.FORMATS.keys()), index=1, key="rr_fmt")
     rtone = rc[1].selectbox("Tone", list(_msg.TONES.keys()), index=1, key="rr_tone")

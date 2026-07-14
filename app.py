@@ -1127,6 +1127,8 @@ import llm as _llm
 import briefing as _brief
 import policylab as _lab
 import people as _people
+import packet as _packet
+import store as _store
 try:
     from sources import nystate as _nys, congress as _cong
 except Exception:  # keep the app up even if a source module has an issue
@@ -1420,7 +1422,7 @@ with sec_people:
     t_members, t_profile, t_dossier, t_compare, t_net, t_map = st.tabs(
         ["👤 Members", "🪪 Deep profile", "📕 Dossier", "⚖️ Compare", "🤝 Coalitions", "🗺️ District map"])
 with sec_brief:
-    t_brief, t_lab = st.tabs(["📰 Briefing Studio", "💡 Policy Lab"])
+    t_brief, t_packet, t_lab = st.tabs(["📰 Briefing Studio", "📦 District Packet", "💡 Policy Lab"])
 
 def need_data():
     st.info("Load data from the ⚙️ controls panel above first (this tab uses that data).")
@@ -2850,7 +2852,11 @@ with t_activity:
     st.subheader("🔔 Activity across all levels")
     st.caption("Track specific bills from any level and see what moved. Add bills to the watchlist, then **Refresh & "
                "diff** to catch status changes, amendments, and new actions since you last checked (this session).")
-    wl = st.session_state.setdefault("watchlist", {})  # key -> {level, file, last_status, title, link}
+    if "watchlist" not in st.session_state:
+        st.session_state["watchlist"] = _store.load("watchlist", {})  # durable across reruns/restarts
+    wl = st.session_state["watchlist"]  # key -> {level, file, last_status, title, link}
+    if _store.available():
+        st.caption("💾 Watchlist is saved to disk — it survives app restarts within this deployment.")
 
     with st.expander("➕ Add bills to the watchlist", expanded=not wl):
         st.caption("NYC bills come from your loaded set; State/Federal from your latest searches on the *State & "
@@ -2862,6 +2868,7 @@ with t_activity:
                 r = next(x for x in rows if x["File"] == nyc_pick)
                 wl[f"NYC:{r['File']}"] = {"level": "NYC", "file": r["File"], "last_status": r["Status"],
                                           "title": r["Title"], "link": r["Web Link"], "mid": r["MatterId"]}
+                _store.save("watchlist", wl)
                 st.success(f"Watching {r['File']}")
         else:
             addcols[0].caption("Load NYC data to add city bills.")
@@ -2872,6 +2879,7 @@ with t_activity:
                 b = next(x for x in pool if x["File"] == gp)
                 wl[f'{b.get("level","?")}:{b["File"]}'] = {"level": b.get("level", "?"), "file": b["File"],
                     "last_status": b.get("Status", ""), "title": b.get("Title", ""), "link": b.get("Web Link", "")}
+                _store.save("watchlist", wl)
                 st.success(f"Watching {b['File']}")
         else:
             addcols[1].caption("Search Albany/Congress first to add those.")
@@ -2906,8 +2914,9 @@ with t_activity:
                                     "Now": new_status})
                     w["last_status"] = new_status
             st.session_state["wl_changes"] = changes
+            _store.save("watchlist", wl)  # persist any status updates from the diff
         if top[1].button("Clear watchlist", key="wl_clear"):
-            st.session_state["watchlist"] = {}; st.rerun()
+            st.session_state["watchlist"] = {}; _store.save("watchlist", {}); st.rerun()
 
         ch = st.session_state.get("wl_changes")
         if ch:
@@ -2988,3 +2997,94 @@ with t_profile:
                 _render_profile(_profiles, p_llm, "NY State", m["name"], _profiles.state_facts(m), {})
             else:
                 st.info("No members returned (or Albany was unreachable).")
+
+
+# ============================================================================
+# 📦 DISTRICT PACKET — one-click printable briefing bundle
+# ============================================================================
+with t_packet:
+    st.subheader("📦 District Packet")
+    st.caption("One click, one printable document: a member's profile, their bills, and the upcoming hearings that "
+               "touch their committees — the leave-behind for a meeting or a press hit. Print to PDF from the export.")
+    import profiles as _profiles
+    pk_llm = _get_llm(smart=True)
+    lvl = st.radio("Level", ["NYC Council", "Federal"], horizontal=True, key="pk_level")
+
+    incl = st.columns(3)
+    want_glance = incl[0].checkbox("AI 'record at a glance'", value=bool(pk_llm.ready), key="pk_glance")
+    want_hear = incl[1].checkbox("Upcoming hearings (45 days)", value=True, key="pk_hear")
+
+    if lvl == "NYC Council":
+        members = get_directory()
+        who = st.selectbox("Council Member", members, key="pk_member") if members else \
+            st.text_input("Member last name", key="pk_member_txt")
+        if who and st.button("Build packet", type="primary", key="pk_go_nyc"):
+            with st.spinner("Assembling the packet…"):
+                try:
+                    if bundle and member_bills(rows, who):
+                        mb = member_bills(rows, who); stats = dossier_stats(mb, who)
+                    else:
+                        dd = build_member_dossier(who, year); mb = dd["rows"]; stats = dd["stats"]
+                    coms = sorted({r.get("Committee/Body") for r in mb if r.get("Committee/Body")})
+                    facts = _profiles.council_facts(who, stats, committees=coms[:6])
+                    glance = _profiles.glance(pk_llm, "NYC", who, facts) if want_glance else ""
+                    hearings = []
+                    if want_hear:
+                        today = _dt.date.today()
+                        allh = fetch_hearings(str(today), str(today + _dt.timedelta(days=45)))
+                        comset = {c.lower() for c in coms}
+                        hearings = [h for h in allh if (h.get("Committee / Body") or "").lower() in comset] or allh[:10]
+                    md = _packet.build_packet_md(who, "NYC City Council", facts=facts, glance=glance,
+                                                 bills=mb, hearings=hearings, as_of=str(_dt.date.today()))
+                    st.session_state["packet_out"] = (md, who.replace(" ", "_"), mb, facts)
+                except Exception as e:
+                    st.error(f"{type(e).__name__}: {e}")
+    else:  # Federal
+        deleg = load_federal_delegation()
+        if not deleg:
+            st.info("Delegation roster unreachable right now; it loads automatically in a normal deployment.")
+        else:
+            names = {f'{d["name"]} — {d["seat"]}': d for d in deleg}
+            pick = st.selectbox("Member", list(names.keys()), key="pk_fed")
+            d = names[pick]
+            ckey = st.session_state.get("cong_key", "")
+            if st.button("Build packet", type="primary", key="pk_go_fed"):
+                with st.spinner("Assembling the packet…"):
+                    coms = federal_committees().get(d["extra"].get("bioguide", ""), [])
+                    spon = []
+                    if ckey.strip():
+                        try:
+                            spon = congress_member_bills(d["extra"].get("bioguide", ""), "sponsored", ckey.strip())
+                        except Exception:
+                            spon = []
+                    facts = _profiles.federal_facts(d, committees=coms, sponsored=spon)
+                    glance = _profiles.glance(pk_llm, "Federal", d["name"], facts) if want_glance else ""
+                    md = _packet.build_packet_md(d["name"], "U.S. Congress", facts=facts, glance=glance,
+                                                 bills=spon, as_of=str(_dt.date.today()))
+                    st.session_state["packet_out"] = (md, d["name"].replace(" ", "_"), spon, facts)
+
+    out = st.session_state.get("packet_out")
+    if out:
+        md, title, bills_, facts_ = out
+        st.markdown(f'<div class="brief">{_brief.md_to_html(md)}</div>', unsafe_allow_html=True)
+        st.divider()
+        dc = st.columns(3)
+        dc[0].download_button("⬇️ Markdown", md, f"packet_{title}.md", "text/markdown",
+                              key="pk_md", use_container_width=True)
+        html = _brief.print_html(_brief.md_to_html(md), title=f"District packet — {title}")
+        dc[1].download_button("🖨️ Print / PDF (HTML)", html, f"packet_{title}.html", "text/html",
+                              key="pk_html", use_container_width=True)
+        try:
+            from openpyxl import Workbook as _WB3
+            wb = _WB3(); ws = wb.active; ws.title = "Bills"
+            hdrs = ["File", "Type", "Title", "Status", "Prime sponsor", "Web Link"]
+            ws.append(hdrs)
+            for r_ in _packet.packet_to_rows(title, facts_, bills_):
+                ws.append([r_.get(h, "") for h in hdrs])
+            wb.save("/tmp/packet.xlsx")
+            with open("/tmp/packet.xlsx", "rb") as fh:
+                dc[2].download_button("⬇️ Bills (Excel)", fh.read(), f"packet_{title}.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="pk_xlsx", use_container_width=True)
+        except Exception:
+            dc[2].caption("Excel export unavailable.")

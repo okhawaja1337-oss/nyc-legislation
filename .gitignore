@@ -4,4 +4,5 @@ __pycache__/
 .streamlit/secrets.toml
 *.xlsx
 legistar_state.db
+.appstate/
 .DS_Store

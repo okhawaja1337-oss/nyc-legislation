@@ -14,6 +14,13 @@ sources and an AI briefing/ideation layer.
 
 ## What it does
 
+### 🏙️ City Hall (the city, first)
+The primary hub — New York City government up front, with State & Federal in their own separate section.
+- **🏛️ City Officials** — who's in what office citywide and by borough (Mayor, Public Advocate, Comptroller, Borough Presidents, District Attorneys, the Speaker), what each office does, and the official site for the current holder.
+- **🧑‍🤝‍🧑 Council Members** — the 51-member Council as photo cards (portraits are best-effort from Wikipedia, with clean initials avatars as a fallback).
+- **📍 District Profile** — a map of any district, its official links, and a **web-sourced demographic & language snapshot** (population, communities, top languages, income — each figure carrying its source).
+- **🏠 Find my reps** — address → every official who represents it.
+
 ### 📜 Legislation (City Hall — live from NYC Legistar)
 - **Legislation list** — every bill for a chosen year, all types, searchable by number or word.
 - **Bill detail** — sponsors, committee, status, action history, roll-call votes, attachments, full text, and an optional AI policy analysis.

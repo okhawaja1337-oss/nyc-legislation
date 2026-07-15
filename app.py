@@ -1179,6 +1179,11 @@ import packet as _packet
 import store as _store
 import messaging as _msg
 import analysis as _analysis
+import citydata as _city
+try:
+    from sources import media as _media
+except Exception:
+    _media = None
 try:
     from sources import nystate as _nys, congress as _cong
 except Exception:  # keep the app up even if a source module has an issue
@@ -1203,86 +1208,93 @@ def year_window(year):
 
 st.markdown("""
 <style>
-:root { --bg:#0a0f1c; --bg2:#0d1426; --surf:#121c33; --surf2:#16213b; --line:#243352;
-        --ink:#e7eefb; --mut:#9fb2d0; --blue:#3b82f6; --cyan:#38bdf8; --teal:#2dd4bf; --green:#34d399; }
+/* ===== Light, cohesive design system ===== */
+:root { --bg:#f5f7fb; --bg2:#eef2f9; --surf:#ffffff; --surf2:#f3f6fc; --line:#e2e8f2;
+        --ink:#1a2537; --mut:#5b6b86; --blue:#1d4ed8; --blue2:#2563eb; --cyan:#0891b2;
+        --teal:#0d9488; --green:#059669; --shadow:0 2px 10px rgba(24,45,90,.06);
+        --shadow2:0 6px 22px rgba(24,45,90,.10); }
 [data-testid="stSidebar"] { display:none !important; }
 [data-testid="stSidebarCollapsedControl"] { display:none !important; }
-.stApp { background: radial-gradient(1200px 600px at 80% -10%, #14233f 0%, var(--bg) 55%) fixed; color: var(--ink); }
-.block-container { padding-top: 1.0rem; max-width: 1440px; }
-body, .stMarkdown, p, span, label, div { color: var(--ink); }
-.appbar { background: linear-gradient(110deg,#0b1226 0%,#16264a 50%,#1e3a8a 140%);
-  color:#fff; border-radius:16px; padding:18px 22px; margin-bottom:14px;
-  border:1px solid #24365e; box-shadow:0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
-  position:relative; overflow:hidden; }
+.stApp { background:
+  radial-gradient(1100px 520px at 88% -12%, #e7eefb 0%, rgba(231,238,251,0) 60%),
+  radial-gradient(900px 440px at -8% 4%, #eaf1ff 0%, rgba(234,241,255,0) 55%), var(--bg) fixed;
+  color: var(--ink); }
+.block-container { padding-top: 1.0rem; max-width: 1400px; }
+body, .stMarkdown, p, span, label, li { color: var(--ink); }
+.appbar { background: linear-gradient(115deg,#12275a 0%,#1e40af 55%,#2563eb 130%);
+  color:#fff; border-radius:18px; padding:20px 26px; margin-bottom:16px;
+  border:1px solid #1b3a86; box-shadow:0 10px 30px rgba(29,78,216,.22); position:relative; overflow:hidden; }
 .appbar:after { content:""; position:absolute; right:-30px; top:-70px; width:240px; height:240px;
-  background:radial-gradient(circle, rgba(56,189,248,.18) 0%, rgba(56,189,248,0) 70%); }
-.appbar-title { font-size:1.55rem; font-weight:800; letter-spacing:.3px; color:#fff; }
-.appbar-sub { opacity:.85; font-size:.9rem; margin-top:3px; color:#cdd9f0; }
-.livepill { position:absolute; top:18px; right:22px; background:rgba(52,211,153,.15);
-  color:#6ee7b7; font-weight:700; font-size:.7rem; padding:4px 11px; border-radius:999px; letter-spacing:.6px;
-  border:1px solid rgba(52,211,153,.35); }
-div[data-testid="stMetric"] { background:linear-gradient(180deg,var(--surf) 0%,var(--bg2) 100%);
-  border:1px solid var(--line); border-radius:14px; padding:14px 16px;
-  box-shadow:0 4px 14px rgba(0,0,0,.35); }
-div[data-testid="stMetricValue"] { color:var(--cyan); font-weight:800; }
+  background:radial-gradient(circle, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 70%); }
+.appbar-title { font-size:1.55rem; font-weight:800; letter-spacing:.2px; color:#fff; }
+.appbar-sub { opacity:.92; font-size:.9rem; margin-top:4px; color:#dbe6ff; }
+.livepill { position:absolute; top:20px; right:24px; background:rgba(255,255,255,.16);
+  color:#eafff4; font-weight:700; font-size:.7rem; padding:4px 11px; border-radius:999px; letter-spacing:.6px;
+  border:1px solid rgba(255,255,255,.35); }
+div[data-testid="stMetric"] { background:var(--surf); border:1px solid var(--line); border-radius:14px;
+  padding:14px 16px; box-shadow:var(--shadow); }
+div[data-testid="stMetricValue"] { color:var(--blue); font-weight:800; }
 div[data-testid="stMetricLabel"] { color:var(--mut); font-weight:600; }
 .stTabs [data-baseweb="tab-list"] { gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
 .stTabs [data-baseweb="tab"] { background:var(--surf); border:1px solid var(--line); border-bottom:none;
   border-radius:11px 11px 0 0; padding:7px 14px; font-weight:600; color:var(--mut); }
-.stTabs [aria-selected="true"] { background:linear-gradient(180deg,#1e40af,#1d4ed8) !important; color:#fff !important;
-  border-color:#2a4fa0; box-shadow:0 0 0 1px rgba(56,189,248,.25) inset; }
-.stButton>button { background:linear-gradient(180deg,#2563eb,#1d4ed8); color:#fff; border:1px solid #2a4fa0;
-  border-radius:10px; font-weight:700; padding:.5rem 1.1rem; box-shadow:0 4px 14px rgba(37,99,235,.35); }
-.stButton>button:hover { background:linear-gradient(180deg,#1d4ed8,#1e40af); color:#fff; }
-.stDownloadButton>button { background:linear-gradient(180deg,#0d9488,#0f766e); color:#fff; border:1px solid #115e59;
+.stTabs [aria-selected="true"] { background:linear-gradient(180deg,#2563eb,#1d4ed8) !important; color:#fff !important;
+  border-color:#1d4ed8; }
+.stButton>button { background:linear-gradient(180deg,#2563eb,#1d4ed8); color:#fff; border:1px solid #1d4ed8;
+  border-radius:10px; font-weight:700; padding:.5rem 1.1rem; box-shadow:0 3px 10px rgba(37,99,235,.22); }
+.stButton>button:hover { background:linear-gradient(180deg,#1d4ed8,#1e3a8a); color:#fff; }
+.stDownloadButton>button { background:linear-gradient(180deg,#0d9488,#0f766e); color:#fff; border:1px solid #0f766e;
   border-radius:10px; font-weight:700; }
-[data-testid="stExpander"] { border:1px solid var(--line); border-radius:14px;
-  background:linear-gradient(180deg,var(--surf) 0%,var(--bg2) 100%); box-shadow:0 4px 16px rgba(0,0,0,.35); }
+[data-testid="stExpander"] { border:1px solid var(--line); border-radius:14px; background:var(--surf);
+  box-shadow:var(--shadow); }
 [data-testid="stExpander"] summary { font-weight:700; color:var(--ink); }
 [data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:12px; }
-[data-baseweb="select"]>div, .stTextInput input, .stNumberInput input {
-  background:var(--surf2) !important; color:var(--ink) !important; border-color:var(--line) !important; }
-a { color:var(--cyan) !important; }
-h1,h2,h3 { color:var(--ink); }
-div[data-testid="stAlert"] { border-radius:12px; background:var(--surf); border:1px solid var(--line); color:var(--ink); }
+[data-baseweb="select"]>div, .stTextInput input, .stNumberInput input, .stTextArea textarea {
+  background:var(--surf) !important; color:var(--ink) !important; border-color:var(--line) !important; }
+a { color:var(--blue) !important; }
+h1,h2,h3 { color:#132444; }
+div[data-testid="stAlert"] { border-radius:12px; border:1px solid var(--line); }
 hr { border-color:var(--line); }
 
-/* ---- v2 component system ---- */
+/* ---- component system ---- */
 .stTabs .stTabs [data-baseweb="tab"] { padding:5px 11px; font-size:.86rem; }
 .kicker { text-transform:uppercase; letter-spacing:.14em; font-size:.7rem; font-weight:800; color:var(--mut); }
-.hero { background:linear-gradient(135deg,#0b1226 0%,#132a52 55%,#1e3a8a 130%);
-  border:1px solid #24365e; border-radius:18px; padding:22px 26px; margin-bottom:16px; position:relative; overflow:hidden;
-  box-shadow:0 12px 34px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06); }
+.hero { background:linear-gradient(120deg,#12275a 0%,#1e40af 60%,#2563eb 130%);
+  border-radius:18px; padding:22px 26px; margin-bottom:16px; position:relative; overflow:hidden;
+  box-shadow:0 10px 30px rgba(29,78,216,.22); }
 .hero h1 { font-size:1.7rem; font-weight:800; margin:0 0 4px; color:#fff; }
-.hero p { color:#cdd9f0; margin:0; opacity:.9; }
+.hero p { color:#dbe6ff; margin:0; }
 .hero:after { content:""; position:absolute; right:-40px; top:-80px; width:280px; height:280px;
-  background:radial-gradient(circle, rgba(56,189,248,.20) 0%, rgba(56,189,248,0) 70%); }
+  background:radial-gradient(circle, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 70%); }
 .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:.72rem; font-weight:700;
   letter-spacing:.02em; border:1px solid transparent; }
-.b-nyc   { background:rgba(59,130,246,.16); color:#93c5fd; border-color:rgba(59,130,246,.4); }
-.b-state { background:rgba(139,92,246,.16); color:#c4b5fd; border-color:rgba(139,92,246,.4); }
-.b-fed   { background:rgba(239,68,68,.15);  color:#fca5a5; border-color:rgba(239,68,68,.4); }
+.b-nyc   { background:#e6effe; color:#1746b0; border-color:#c5dafb; }
+.b-state { background:#f0e9fe; color:#6b34c9; border-color:#dbccfa; }
+.b-fed   { background:#fde9e9; color:#c02626; border-color:#f7cdcd; }
 .b-muted { background:var(--surf2); color:var(--mut); border-color:var(--line); }
-.b-green { background:rgba(52,211,153,.15); color:#6ee7b7; border-color:rgba(52,211,153,.35); }
-.card { background:linear-gradient(180deg,var(--surf) 0%,var(--bg2) 100%); border:1px solid var(--line);
-  border-radius:14px; padding:14px 16px; margin-bottom:10px; box-shadow:0 4px 14px rgba(0,0,0,.30); }
-.card h4 { margin:0 0 4px; color:var(--ink); font-size:1.02rem; }
+.b-green { background:#e3f6ee; color:#08794a; border-color:#c4ead8; }
+.card { background:var(--surf); border:1px solid var(--line); border-radius:14px;
+  padding:14px 16px; margin-bottom:10px; box-shadow:var(--shadow); }
+.card h4 { margin:0 0 4px; color:#132444; font-size:1.02rem; }
 .card .meta { color:var(--mut); font-size:.82rem; }
 .pcard { border-left:4px solid var(--blue); }
-.pcard.state { border-left-color:#8b5cf6; } .pcard.fed { border-left-color:#ef4444; }
-.brief { background:#0e1830; border:1px solid var(--line); border-left:4px solid var(--cyan);
-  border-radius:12px; padding:6px 20px 14px; }
-.brief h2 { color:#dbeafe; font-size:1.15rem; margin-top:14px; }
+.pcard.state { border-left-color:#7c3aed; } .pcard.fed { border-left-color:#ef4444; }
+.brief { background:#f7faff; border:1px solid var(--line); border-left:4px solid var(--blue);
+  border-radius:12px; padding:6px 20px 14px; box-shadow:var(--shadow); }
+.brief h2 { color:#12275a; font-size:1.15rem; margin-top:14px; }
+.brief h1 { color:#12275a; }
 .chip { display:inline-block; background:var(--surf2); border:1px solid var(--line); color:var(--mut);
   border-radius:8px; padding:2px 9px; font-size:.75rem; margin:2px 4px 2px 0; }
-.stars { color:#fbbf24; letter-spacing:2px; }
+.stars { color:#e0a400; letter-spacing:2px; }
+.memberrow { display:flex; align-items:center; gap:12px; }
+.memberrow .info h4 { margin:0; } .memberrow .info .meta { color:var(--mut); font-size:.82rem; }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="appbar">
   <div class="appbar-title">🗽 NYC Legislative Intelligence</div>
-  <div class="appbar-sub">City Hall · Albany · Washington — legislation, members, elections & votes that shape New York City.
+  <div class="appbar-sub"><b>City Hall first</b> — the Council, its members &amp; districts — with Albany &amp; Washington alongside.
   &nbsp;<b>“Bulletpoints for Bureaucrats”</b> briefings built for the desk.</div>
   <span class="livepill">● LIVE</span>
 </div>
@@ -1470,10 +1482,14 @@ elif load:
 # Grouped, two-level navigation: 7 clean sections, each with focused sub-tabs.
 # (Streamlit tab containers carry their own path, so the `with t_x:` blocks
 #  below can stay where they are and still render inside the right section.)
-sec_home, sec_leg, sec_levels, sec_people, sec_brief, sec_politics, sec_ask, sec_about = st.tabs(
-    ["🏛️ Command Center", "📜 Legislation", "🌐 All Levels", "👥 People & Coalitions",
-     "📰 Briefings & Ideas", "📣 Politics & Messaging", "💬 Ask", "ℹ️ About"])
+# City-first navigation: City Hall leads; State & Federal is a clearly separate section.
+sec_home, sec_city, sec_leg, sec_people, sec_brief, sec_politics, sec_levels, sec_ask, sec_about = st.tabs(
+    ["🏛️ Command Center", "🏙️ City Hall", "📜 Legislation", "👥 People & Coalitions",
+     "📰 Briefings & Ideas", "📣 Politics & Messaging", "🇺🇸 State & Federal", "💬 Ask", "ℹ️ About"])
 t_home, t_ask, t_about = sec_home, sec_ask, sec_about
+with sec_city:
+    t_officials, t_council, t_distprofile, t_reps = st.tabs(
+        ["🏛️ City Officials", "🧑‍🤝‍🧑 Council Members", "📍 District Profile", "🏠 Find my reps"])
 with sec_politics:
     t_warroom, t_statement, t_rapid, t_influence = st.tabs(
         ["🎯 Issue War Room", "📝 Statement Studio", "⚡ Rapid Response", "🧭 Influence Map"])
@@ -1481,9 +1497,9 @@ with sec_leg:
     t_list, t_detail, t_hear, t_changes, t_over = st.tabs(
         ["📋 Legislation list", "📄 Bill detail", "📅 Hearings", "🔔 What changed", "📊 Overview"])
 with sec_levels:
-    t_reps, t_gov, t_votes, t_activity, t_dir, t_elect = st.tabs(
-        ["🏠 Find my reps", "🏙️ State & Federal", "🗳️ Votes & decisions",
-         "🔔 Activity (all levels)", "👤 Who governs NYC", "🗳️ Elections & terms"])
+    t_gov, t_votes, t_activity, t_dir, t_elect = st.tabs(
+        ["🏙️ State & Federal bills", "🗳️ Votes & decisions", "🔔 Activity (all levels)",
+         "👤 Who governs NYC", "🗳️ Elections & terms"])
 with sec_people:
     t_members, t_wiki, t_grid, t_profile, t_dossier, t_compare, t_net, t_map = st.tabs(
         ["👤 Members", "📖 CM Wiki", "📊 Policy Grid", "🪪 Deep profile", "📕 Dossier",
@@ -3642,3 +3658,104 @@ with t_grid:
                 st.markdown("**Who owns each issue (most bills sponsored):**")
                 st.dataframe(pd.DataFrame(sorted(leaders, key=lambda x: -x["Bills"])),
                              hide_index=True, use_container_width=True, height=300)
+
+
+# ============================================================================
+# 🏛️ CITY HALL — officials, council members (with photos), district profiles
+# ============================================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def member_photo_cached(name):
+    if not _media:
+        return None, None
+    return _media.wiki_photo(name, "New York City Council")
+
+
+def _portrait(name, photo_url=None, size=64):
+    if _media:
+        return _media.portrait_html(name, photo_url, size)
+    return ""
+
+
+with t_officials:
+    st.subheader("🏛️ Who's in what office — City of New York")
+    st.caption("The citywide and boroughwide elected offices that run New York City, what each one does, and the "
+               "official site for the current officeholder. (Names live on the official pages so this never goes stale.)")
+    rows_off = _city.citywide_rows()
+    st.markdown("**Citywide**")
+    cc = st.columns(2)
+    cw = [r for r in rows_off if r["scope"] == "Citywide"]
+    for i, r in enumerate(cw):
+        cc[i % 2].markdown(
+            f'<div class="card pcard"><h4>{r["office"]} '
+            f'<span class="badge b-nyc">{r["branch"]}</span></h4>'
+            f'<div class="meta">{r["remit"]}<br><a href="{r["link"]}">official site ↗</a></div></div>',
+            unsafe_allow_html=True)
+    st.markdown("**Borough Presidents**")
+    bc = st.columns(5)
+    for i, r in enumerate([x for x in rows_off if "Borough President" in x["office"]]):
+        bc[i].markdown(f'<div class="card pcard"><h4 style="font-size:.92rem">{r["scope"]}</h4>'
+                       f'<div class="meta"><a href="{r["link"]}">office ↗</a></div></div>', unsafe_allow_html=True)
+    st.markdown("**District Attorneys**")
+    dc = st.columns(5)
+    for i, r in enumerate([x for x in rows_off if "District Attorney" in x["office"]]):
+        dc[i].markdown(f'<div class="card pcard fed"><h4 style="font-size:.92rem">{r["scope"]}</h4>'
+                       f'<div class="meta"><a href="{r["link"]}">office ↗</a></div></div>', unsafe_allow_html=True)
+    st.info("The **City Council** (51 members) is on the next tab, with photos. Land-use and budget powers run through "
+            "the Council + the Mayor + the Borough Presidents (ULURP) — see the Legislation and Briefings tabs.")
+
+
+with t_council:
+    st.subheader("🧑‍🤝‍🧑 The City Council — 51 members")
+    members = get_directory()
+    if not members:
+        st.info("The Council roster loads from Legistar; it was unreachable just now, or no data is loaded. Open the "
+                "⚙️ panel and load any City Council data to populate it.")
+    else:
+        st.caption(f"{len(members)} current Council Members. Portraits are best-effort from Wikipedia; where there's no "
+                   "match you'll see a clean initials avatar. Open any member's full record in **People → CM Wiki**.")
+        want_photos = st.checkbox("Fetch member photos from Wikipedia (slower first load)", value=False, key="cm_photos")
+        cols = st.columns(3)
+        for i, nm in enumerate(members):
+            photo = None
+            if want_photos:
+                try:
+                    photo, _ = member_photo_cached(nm)
+                except Exception:
+                    photo = None
+            cols[i % 3].markdown(
+                f'<div class="card"><div class="memberrow">{_portrait(nm, photo, 56)}'
+                f'<div class="info"><h4>{nm}</h4>'
+                f'<div class="meta">{_level_badge("NYC")} City Council</div></div></div></div>',
+                unsafe_allow_html=True)
+
+
+with t_distprofile:
+    st.subheader("📍 District Profile")
+    st.caption("A map of any Council district, who represents it, and a sourced demographic & language snapshot. "
+               "Great for understanding who a policy actually reaches.")
+    d = st.selectbox("Council district", list(range(1, 52)), key="dp_district")
+    links = _city.district_links(d)
+    lc = st.columns([2, 1])
+    with lc[0]:
+        st.components.v1.html(district_map_html(int(d)), height=420)
+    with lc[1]:
+        st.markdown(f'<div class="card pcard"><h4>District {d}</h4>'
+                    f'<div class="meta">NYC City Council</div></div>', unsafe_allow_html=True)
+        st.markdown("**Official links**")
+        for label, url in links.items():
+            st.markdown(f"- [{label} ↗]({url})")
+    st.divider()
+    st.markdown("### 👥 Who lives here — demographics & languages")
+    dp_llm = _get_llm(smart=True)
+    if not dp_llm.ready:
+        st.info("Add your **Anthropic key** (⚙️ panel) to generate a sourced demographic & language snapshot "
+                "(uses web search). The official links above always work.")
+    else:
+        if st.button("Build demographic profile", type="primary", key="dp_go"):
+            with st.spinner("Researching the district (web-sourced)…"):
+                st.session_state[f"dp_prof_{d}"] = _city.district_profile(dp_llm, int(d))
+        prof = st.session_state.get(f"dp_prof_{d}")
+        if prof:
+            st.markdown(f'<div class="brief">{_brief.md_to_html(prof)}</div>', unsafe_allow_html=True)
+            st.caption("Web-sourced snapshot — figures carry their source and may lag; verify against the linked "
+                       "NYC Planning / Census profiles before citing.")

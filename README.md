@@ -59,6 +59,12 @@ The member's own communications & influence layer — **advocacy in their voice*
 
 > Integrity guardrails: never invents statistics or another official's words, tags unknown figures `[verify: source]`, criticizes record not persons, and hardcodes no caucus rosters. Drafts are decision-support — confirm any figure before release.
 
+### 🧠 Adaptive intelligence (it learns, and it's fast)
+The tool gets smarter and more tailored the more it's used — and answers instantly from a local index.
+- **Your focus** — the Command Center learns what you work on (members, topics, bills) and leads with it; **follow** any member.
+- **Knowledge & Memory** — save notes against a member/topic/bill; they're **auto-woven into that entity's future briefings**, so your knowledge compounds instead of evaporating. Persists across sessions.
+- **Smart search** — natural-language, relevance-ranked search over every loaded bill via a local TF-IDF index (no API, no wait), plus "related bills."
+
 ### 💬 Ask
 An AI chat over the loaded bills **and** NYC government generally — the City Charter, Administrative Code, ULURP, the budget process — with optional web search for citations.
 

@@ -1180,10 +1180,28 @@ import store as _store
 import messaging as _msg
 import analysis as _analysis
 import citydata as _city
+import memory as _memory
+import retrieval as _retrieval
 try:
     from sources import media as _media
 except Exception:
     _media = None
+
+
+@st.cache_resource(show_spinner=False)
+def _mem():
+    """One persistent Memory for the deployment (survives reruns)."""
+    return _memory.Memory()
+
+
+def _get_index(rows):
+    """Build/reuse a TF-IDF search index for the loaded rows (cached in session)."""
+    key = (st.session_state.get("loaded_year", ""), len(rows))
+    cur = st.session_state.get("_index_key")
+    if cur != key or "_search_index" not in st.session_state:
+        st.session_state["_search_index"] = _retrieval.Index.build(rows, _retrieval.bill_text)
+        st.session_state["_index_key"] = key
+    return st.session_state["_search_index"]
 try:
     from sources import nystate as _nys, congress as _cong
 except Exception:  # keep the app up even if a source module has an issue
@@ -1505,7 +1523,8 @@ with sec_people:
         ["👤 Members", "📖 CM Wiki", "📊 Policy Grid", "🪪 Deep profile", "📕 Dossier",
          "⚖️ Compare", "🤝 Coalitions", "🗺️ District map"])
 with sec_brief:
-    t_brief, t_packet, t_lab = st.tabs(["📰 Briefing Studio", "📦 District Packet", "💡 Policy Lab"])
+    t_brief, t_packet, t_lab, t_memory = st.tabs(
+        ["📰 Briefing Studio", "📦 District Packet", "💡 Policy Lab", "🧠 Knowledge & Memory"])
 
 def need_data():
     st.info("Load data from the ⚙️ controls panel above first (this tab uses that data).")
@@ -1766,6 +1785,7 @@ with t_detail:
     else:
         pick = st.selectbox("Pick a bill", [r["File"] for r in rows], key="detail")
         r = next(x for x in rows if x["File"] == pick); mid = r["MatterId"]
+        _mem().log("view", "bill", r["File"], {"title": (r.get("Title") or "")[:80]})
         sp = r.get("_sponsor_objs", []); hi = bundle["histories_map"].get(mid, [])
         at = bundle["attach_map"].get(mid, []); tx = bundle["text_map"].get(mid, "")
         if not sp and not hi and not at:
@@ -2309,6 +2329,9 @@ def _brief_download_row(md, title, key_prefix):
                 key=f"{key_prefix}_xlsx", use_container_width=True)
     except Exception:
         cols[2].caption("Excel export unavailable.")
+    if st.button("💾 Save to Knowledge base", key=f"{key_prefix}_save"):
+        _mem().save_item("briefing", title, md)
+        st.success("Saved — find it in 🧠 Knowledge & Memory.")
 
 
 # ============================================================================
@@ -2605,8 +2628,11 @@ with t_brief:
                                           f"{(h.get('MatterHistoryActionName') or '').strip()}"
                                           for h in (hi or [])[-6:]]
                         rr = dict(r); rr["_sponsor_objs"] = sp
+                        _kctx = _memory.context_for_briefing(_mem(), "bill", r["File"],
+                                    topic=(r.get("Topic tags") or "").split(";")[0].strip() or None)
+                        _mem().log("brief", "bill", r["File"])
                         md = _brief.bill_briefing(_llm_client, rr, text=tx,
-                                                  data_ctx=build_data_context(r),
+                                                  data_ctx=(build_data_context(r) + "\n\n" + _kctx).strip(),
                                                   audience=audience, detail=det)
                     except Exception as e:
                         md = _brief.template_bill_briefing(r) + f"\n\n> _(detail step failed: {e})_"
@@ -2645,6 +2671,10 @@ with t_brief:
                         mb = member_bills(rows, who); stats = dossier_stats(mb, who)
                     else:
                         dd = build_member_dossier(who, year); stats = dd["stats"]
+                    _notes = [n["note"] for n in _mem().notes_for("member", who)]
+                    if _notes:
+                        stats = dict(stats); stats["staff_notes"] = _notes
+                    _mem().log("brief", "member", who)
                     md = _brief.member_briefing(_llm_client, who, stats, audience=audience)
                 except Exception as e:
                     md = f"## {who}\n\n> _(couldn't assemble record: {e})_"
@@ -3439,6 +3469,12 @@ with t_wiki:
         allm = list(_analysis.member_names(rows).keys())
         who = st.selectbox("Council Member", allm, key="wiki_member")
         if who:
+            _mem().log("view", "member", who)
+            mnc = st.columns([1, 4])
+            if mnc[0].button(("★ Following" if _mem().is_following("member", who) else "☆ Follow"),
+                             key="wiki_follow"):
+                (_mem().unfollow if _mem().is_following("member", who) else _mem().follow)("member", who)
+                st.rerun()
             mb = member_bills(rows, who)
             stats = dossier_stats(mb, who)
             _p3 = sum(1 for r in mb if who.split()[-1].lower() in (r.get("Prime Sponsor", "") or "").lower())
@@ -3759,3 +3795,129 @@ with t_distprofile:
             st.markdown(f'<div class="brief">{_brief.md_to_html(prof)}</div>', unsafe_allow_html=True)
             st.caption("Web-sourced snapshot — figures carry their source and may lag; verify against the linked "
                        "NYC Planning / Census profiles before citing.")
+
+
+# ============================================================================
+# 🧠 ADAPTIVE INTELLIGENCE — personalized focus, smart search, knowledge base
+# ============================================================================
+# --- Command Center: "Your focus" (learns from what you use) ---
+with t_home:
+    st.divider()
+    st.markdown('<span class="kicker">Your focus — the desk learns what you work on</span>',
+                unsafe_allow_html=True)
+    _m = _mem()
+    prof = _m.interest_profile()
+    fol = _m.follows()
+    fc = st.columns(3)
+    top_members = prof.get("member", [])
+    top_topics = prof.get("topic", [])
+    with fc[0]:
+        st.markdown("**Most-worked members**")
+        if top_members:
+            for name, w in top_members[:6]:
+                star = "★ " if _m.is_following("member", name) else ""
+                st.markdown(f"- {star}{name}")
+        else:
+            st.caption("Open a member in CM Wiki and it shows up here.")
+    with fc[1]:
+        st.markdown("**Your top topics**")
+        if top_topics:
+            st.markdown(" ".join(f'<span class="chip">{t}</span>' for t, _w in top_topics[:8]),
+                        unsafe_allow_html=True)
+        else:
+            st.caption("Search or brief on a topic to build this.")
+    with fc[2]:
+        st.markdown("**Following**")
+        watched = fol.get("member", [])
+        if watched:
+            for w in watched[:8]:
+                st.markdown(f"- ★ {w}")
+        else:
+            st.caption("Use ☆ Follow on a member's CM Wiki page.")
+    rec = _m.recent(8)
+    if rec:
+        st.caption("Recent: " + " · ".join(f"{r['kind']} {r['entity']}" for r in rec[:8]))
+    _st = _m.stats()
+    st.caption(f"🧠 Memory: {_st['events']} events · {_st['notes']} notes · {_st['follows']} follows "
+               + ("(saved to disk)" if _m.ok else "(session only — disk not writable)"))
+
+
+# --- Legislation list: fast relevance-ranked "smart search" ---
+with t_list:
+    if bundle and rows:
+        with st.expander("🔎 Smart search — natural-language, relevance-ranked (instant, local)"):
+            st.caption("Ask in plain words — e.g. *tenants facing eviction*, *e-bike battery fires*, "
+                       "*ferry service to the Rockaways*. Ranks every loaded bill by relevance using a local index "
+                       "(no API, no wait).")
+            sq = st.text_input("Describe what you're looking for", key="smart_q")
+            if sq.strip():
+                _mem().log("search", "topic", sq.strip()[:40])
+                ix = _get_index(rows)
+                hits = ix.search(sq.strip(), top=25)
+                st.caption(f"{len(hits)} most relevant of {len(rows)} bills")
+                if hits:
+                    st.dataframe(pd.DataFrame([{"File": r["File"], "Type": r.get("Type", ""),
+                        "Title": (r.get("Title") or "")[:90], "Status": r.get("Status", ""),
+                        "Relevance": round(s, 3), "Web Link": r.get("Web Link", "")} for r, s in hits]),
+                        use_container_width=True, height=420,
+                        column_config={"Web Link": st.column_config.LinkColumn("Open", display_text="Open")})
+
+
+# --- Knowledge & Memory tab ---
+with t_memory:
+    st.subheader("🧠 Knowledge & Memory")
+    st.caption("The adaptive core: the desk remembers what you work on, and any notes you save here are woven back "
+               "into future briefings automatically — your knowledge compounds instead of evaporating.")
+    _m = _mem()
+    s = _m.stats()
+    mc = st.columns(4)
+    mc[0].metric("Events learned", s["events"]); mc[1].metric("Knowledge notes", s["notes"])
+    mc[2].metric("Saved items", s["saved"]); mc[3].metric("Following", s["follows"])
+    if not _m.ok:
+        st.warning("Storage isn't writable here, so memory is session-only. In a normal deployment it persists to disk.")
+
+    st.markdown("### 📝 Add a knowledge note")
+    st.caption("Saved notes on a **member** or **topic** are auto-injected into that entity's briefings.")
+    nc = st.columns([1, 1.4, 3, 1])
+    net = nc[0].selectbox("Type", ["member", "topic", "bill"], key="note_etype")
+    nent = nc[1].text_input("Who/what (e.g. Hanks, housing, Int 0220-2026)", key="note_entity")
+    ntext = nc[2].text_input("Note", key="note_text",
+                             placeholder="e.g. Confirmed NYPD headcount figure with Finance on 7/12")
+    nc[3].write(""); nc[3].write("")
+    if nc[3].button("Save note", key="note_save"):
+        if nent.strip() and ntext.strip():
+            _m.add_note(net, nent.strip(), ntext.strip()); st.rerun()
+        else:
+            st.warning("Enter both an entity and a note.")
+
+    notes = _m.all_notes()
+    if notes:
+        st.markdown("### 📚 Your knowledge base")
+        for n in notes[:60]:
+            rc = st.columns([5, 1])
+            rc[0].markdown(f'<span class="badge b-muted">{n["etype"]}</span> **{n["entity"]}** — {n["note"]}  '
+                           f'<span style="color:#8894ab;font-size:.75rem">{n["ts"][:10]}</span>',
+                           unsafe_allow_html=True)
+            if rc[1].button("Delete", key=f"noted_{n['id']}"):
+                _m.delete_note(n["id"]); st.rerun()
+
+    prof = _m.interest_profile()
+    if prof:
+        st.markdown("### 📈 What the desk has learned about your focus")
+        pc = st.columns(3)
+        for i, (etype, label) in enumerate([("member", "Members"), ("topic", "Topics"), ("bill", "Bills")]):
+            items = prof.get(etype, [])
+            with pc[i]:
+                st.markdown(f"**{label}**")
+                if items:
+                    st.dataframe(pd.DataFrame([{label[:-1]: e, "Weight": round(w, 1)} for e, w in items]),
+                                 hide_index=True, use_container_width=True)
+                else:
+                    st.caption("—")
+
+    saved = _m.saved_items()
+    if saved:
+        st.markdown("### 💾 Saved items")
+        for it in saved[:20]:
+            with st.expander(f"[{it['kind']}] {it['title']} · {it['ts'][:10]}"):
+                st.markdown(it["body"])

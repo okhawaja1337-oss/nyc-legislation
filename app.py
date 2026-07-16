@@ -1182,6 +1182,12 @@ import analysis as _analysis
 import citydata as _city
 import memory as _memory
 import retrieval as _retrieval
+import lawwiki as _wiki
+import profiles as _profiles
+try:
+    from sources import opendata as _od2
+except Exception:
+    _od2 = None
 try:
     from sources import media as _media
 except Exception:
@@ -1506,14 +1512,14 @@ sec_home, sec_city, sec_leg, sec_people, sec_brief, sec_politics, sec_levels, se
      "📰 Briefings & Ideas", "📣 Politics & Messaging", "🇺🇸 State & Federal", "💬 Ask", "ℹ️ About"])
 t_home, t_ask, t_about = sec_home, sec_ask, sec_about
 with sec_city:
-    t_officials, t_council, t_distprofile, t_reps = st.tabs(
-        ["🏛️ City Officials", "🧑‍🤝‍🧑 Council Members", "📍 District Profile", "🏠 Find my reps"])
+    t_memberprofile, t_officials, t_council, t_distprofile, t_reps = st.tabs(
+        ["🪪 Member Profile", "🏛️ City Officials", "🧑‍🤝‍🧑 Council Members", "📍 District Profile", "🏠 Find my reps"])
 with sec_politics:
     t_warroom, t_statement, t_rapid, t_influence = st.tabs(
         ["🎯 Issue War Room", "📝 Statement Studio", "⚡ Rapid Response", "🧭 Influence Map"])
 with sec_leg:
-    t_list, t_detail, t_hear, t_changes, t_over = st.tabs(
-        ["📋 Legislation list", "📄 Bill detail", "📅 Hearings", "🔔 What changed", "📊 Overview"])
+    t_list, t_detail, t_lawwiki, t_hear, t_changes, t_over = st.tabs(
+        ["📋 Legislation list", "📄 Bill detail", "📖 Law Wiki", "📅 Hearings", "🔔 What changed", "📊 Overview"])
 with sec_levels:
     t_gov, t_votes, t_activity, t_dir, t_elect = st.tabs(
         ["🏙️ State & Federal bills", "🗳️ Votes & decisions", "🔔 Activity (all levels)",
@@ -3921,3 +3927,192 @@ with t_memory:
         for it in saved[:20]:
             with st.expander(f"[{it['kind']}] {it['title']} · {it['ts'][:10]}"):
                 st.markdown(it["body"])
+
+
+# ============================================================================
+# 🪪 MEMBER COMMAND PROFILE — everything about a CM on one fast screen
+# ============================================================================
+def _assemble_member_profile(who, stats):
+    """Fetch every slow section concurrently so the page lands in a few seconds."""
+    out = {"stats": stats}
+    jobs = {
+        "wiki": lambda: (_media.wiki_summary(who) if _media else {}),
+        "enrich": lambda: _profiles.enrichment(_get_llm(smart=True), who),
+        "why": lambda: _profiles.why_support(_get_llm(smart=True), who, stats),
+        "persona": lambda: _profiles.persona(_get_llm(smart=True), who, stats),
+        "disc": lambda: (_od2.discretionary_funding(who) if _od2 else []),
+    }
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futs = {k: ex.submit(fn) for k, fn in jobs.items()}
+        for k, f in futs.items():
+            try:
+                out[k] = f.result()
+            except Exception:
+                out[k] = None
+    return out
+
+
+with t_memberprofile:
+    st.subheader("🪪 Member Command Profile")
+    st.caption("One screen, one click: a member's legislative and fiscal record, what drives their priorities, their "
+               "district, interests and socials, and your notes — assembled in parallel so it lands in seconds.")
+    if not (bundle and any(r.get("_sponsor_names") for r in rows)):
+        st.info("Load legislation **with sponsors** (⚙️ panel) so the profile can read each member's record.")
+    else:
+        allm = list(_analysis.member_names(rows).keys())
+        who = st.selectbox("Council Member", allm, key="mp_member")
+        if who:
+            _mem().log("view", "member", who)
+            mb = member_bills(rows, who); stats = dossier_stats(mb, who)
+            skey = f"mprof_{who}"
+            bcol = st.columns([1, 1, 3])
+            if bcol[0].button("⚡ Build full profile", type="primary", key="mp_build"):
+                with st.spinner("Assembling in parallel — record, fiscal, web, notes…"):
+                    st.session_state[skey] = _assemble_member_profile(who, stats)
+            if bcol[1].button(("★ Following" if _mem().is_following("member", who) else "☆ Follow"), key="mp_follow"):
+                (_mem().unfollow if _mem().is_following("member", who) else _mem().follow)("member", who); st.rerun()
+            prof = st.session_state.get(skey)
+            if not prof:
+                st.caption("Press **Build full profile** — or open a lighter view under People → CM Wiki.")
+            else:
+                wiki = prof.get("wiki") or {}; en = prof.get("enrich") or {}
+                photo = wiki.get("photo")
+                district = en.get("district") or ""
+                party = en.get("party") or ""
+                social = en.get("social") or {}
+                soc_links = " ".join(
+                    f'<a href="{("https://x.com/" + v.lstrip("@")) if k in ("x","twitter") else v}">{k}</a>'
+                    for k, v in social.items() if v)
+                st.markdown(
+                    f'<div class="card pcard"><div class="memberrow">{_portrait(who, photo, 84)}'
+                    f'<div class="info"><h4 style="font-size:1.2rem">{who} '
+                    + (f'<span class="badge b-nyc">District {district}</span>' if district else "")
+                    + (f' <span class="badge b-muted">{party}</span>' if party else "")
+                    + f'</div><div class="meta">{en.get("background","") or "NYC City Council"}'
+                    + (f'<br>{soc_links}' if soc_links else "") + '</div></div></div></div>',
+                    unsafe_allow_html=True)
+
+                mm = st.columns(4)
+                mm[0].metric("Bills on", stats.get("bills_on", 0))
+                mm[1].metric("As prime", stats.get("as_prime", 0))
+                mm[2].metric("As co-sponsor", stats.get("as_cosponsor", 0))
+                mm[3].metric("Passed/enacted", (stats.get("by_status") or {}).get("passed", 0))
+
+                L, Rr = st.columns(2)
+                with L:
+                    st.markdown("#### 🏛️ Legislative record")
+                    if stats.get("by_topic"):
+                        st.bar_chart(pd.Series(dict(list(stats["by_topic"].items())[:8])))
+                    if en.get("committees"):
+                        st.markdown("**Committees:** " + ", ".join(en["committees"]))
+                    if en.get("interests"):
+                        st.markdown("**Interests:** " + ", ".join(en["interests"]))
+                    pm = [r for r in mb if who.split()[-1].lower() in (r.get("Prime Sponsor", "") or "").lower()]
+                    if pm:
+                        st.markdown("**Leads on:**")
+                        st.dataframe(pd.DataFrame([{"File": r["File"], "Title": (r["Title"] or "")[:70],
+                            "Status": r["Status"]} for r in pm[:12]]), hide_index=True, use_container_width=True,
+                            height=240)
+                with Rr:
+                    st.markdown("#### 💰 Fiscal footprint")
+                    disc = prof.get("disc") or []
+                    if disc:
+                        tot = sum(d["amount"] or 0 for d in disc)
+                        st.metric("Discretionary funding (found)", f"${tot:,.0f}")
+                        st.dataframe(pd.DataFrame([{"Organization": d["organization"][:40],
+                            "Amount": d["amount"], "FY": d["fiscal_year"]} for d in disc[:12]]),
+                            hide_index=True, use_container_width=True, height=180)
+                    else:
+                        st.caption("No discretionary-funding rows matched here (dataset drifts year to year). "
+                                   "Use the authoritative sources:")
+                    if _od2:
+                        st.markdown(" · ".join(f"[{k}]({v})" for k, v in list(_od2.FISCAL_LINKS.items())[:4]))
+                    if prof.get("why"):
+                        st.markdown("#### 🎯 What drives their priorities")
+                        st.markdown(f'<div class="brief">{_brief.md_to_html(prof["why"])}</div>',
+                                    unsafe_allow_html=True)
+
+                if prof.get("persona"):
+                    st.markdown("#### 🎭 Legislative persona")
+                    st.markdown(f'<div class="brief">{_brief.md_to_html(prof["persona"])}</div>',
+                                unsafe_allow_html=True)
+                if wiki.get("extract"):
+                    st.markdown("#### 📖 Background")
+                    st.write(wiki["extract"])
+                    if wiki.get("url"):
+                        st.markdown(f"[Wikipedia ↗]({wiki['url']})")
+                links_extra = []
+                if district:
+                    links_extra.append(f"[Council district page ↗](https://council.nyc.gov/district-{district}/)")
+                for u in (en.get("sources") or [])[:4]:
+                    links_extra.append(f"[source ↗]({u})")
+                if links_extra:
+                    st.caption("Links: " + " · ".join(links_extra))
+                st.caption("Web-sourced facts (district, socials, background) and AI reads are labeled analysis — "
+                           "verify anything before it goes out. Sponsorship ≠ a member's stated position.")
+
+                # inline notes
+                st.markdown("#### 🗒️ Your notes on this member")
+                nn = st.columns([4, 1])
+                note_txt = nn[0].text_input("Add a note", key="mp_note", label_visibility="collapsed",
+                                            placeholder="e.g. Open to co-sponsoring if we address the fiscal note")
+                nn[1].write("")
+                if nn[1].button("Save note", key="mp_note_save") and note_txt.strip():
+                    _mem().add_note("member", who, note_txt.strip()); st.rerun()
+                for nt in _mem().notes_for("member", who):
+                    st.markdown(f"- {nt['note']}  \n<span style='color:#8894ab;font-size:.75rem'>{nt['ts'][:10]}</span>",
+                                unsafe_allow_html=True)
+
+
+# ============================================================================
+# 📖 LAW WIKI — a wiki page per bill (precedents, alternatives, impact, resources)
+# ============================================================================
+with t_lawwiki:
+    st.subheader("📖 Law Wiki")
+    st.caption("A living page for any bill: what it does, whether it's been tried elsewhere, alternative designs, where "
+               "in NYC it hits hardest, what it'd take to work, and whether it'd move the needle — plus your notes.")
+    if not bundle:
+        need_data()
+    else:
+        pick = st.selectbox("Pick a bill", [r["File"] for r in rows], key="lw_bill")
+        r = next(x for x in rows if x["File"] == pick)
+        _mem().log("view", "bill", r["File"])
+        lw_llm = _get_llm(smart=True)
+        if not lw_llm.ready:
+            st.info("Add your **Anthropic key** (⚙️ panel) to build the wiki entry (uses web search for real "
+                    "precedents). The bill's facts are on the **Bill detail** tab meanwhile.")
+        else:
+            skey = f"lawwiki_{r['File']}"
+            if st.button("📖 Build law wiki (web-sourced)", type="primary", key="lw_go"):
+                with st.spinner("Researching precedents and building the entry…"):
+                    mid = r["MatterId"]
+                    tx = bundle.get("text_map", {}).get(mid, "")
+                    sp = r.get("_sponsor_objs", [])
+                    if not tx or not sp:
+                        try:
+                            d0 = fetch_detail(mid); tx = tx or d0.get("text", "")
+                            sp = sp or current_sponsors({"MatterVersion": None}, d0.get("sponsors", []))
+                        except Exception:
+                            pass
+                    rr = dict(r); rr["_sponsor_objs"] = sp
+                    _mem().log("brief", "bill", r["File"])
+                    st.session_state[skey] = _wiki.law_wiki(lw_llm, rr, text=tx,
+                                                            data_ctx=build_data_context(r), allow_web=True)
+            entry = st.session_state.get(skey)
+            if entry:
+                st.markdown(f'<div class="brief">{_brief.md_to_html(entry)}</div>', unsafe_allow_html=True)
+                ec = st.columns(2)
+                ec[0].download_button("⬇️ Markdown", entry, f"lawwiki_{r['File'].replace(' ','_')}.md",
+                                      "text/markdown", key="lw_dl", use_container_width=True)
+                if ec[1].button("💾 Save to Knowledge base", key="lw_save", use_container_width=True):
+                    _mem().save_item("law-wiki", r["File"], entry); st.success("Saved.")
+                st.markdown("#### 🗒️ Notes on this bill")
+                ln = st.columns([4, 1])
+                lnt = ln[0].text_input("Add a note", key="lw_note", label_visibility="collapsed",
+                                       placeholder="e.g. Ask IBO for a fiscal note; check Chicago's version")
+                ln[1].write("")
+                if ln[1].button("Save note", key="lw_note_save") and lnt.strip():
+                    _mem().add_note("bill", r["File"], lnt.strip()); st.rerun()
+                for nt in _mem().notes_for("bill", r["File"]):
+                    st.markdown(f"- {nt['note']}")
+                st.caption("Web-sourced precedents and AI analysis — verify specifics; figures are flagged to check.")

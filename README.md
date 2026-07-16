@@ -37,6 +37,8 @@ The primary hub — New York City government up front, with State & Federal in t
 - **🗳️ Elections & terms** — a deterministic ballot calendar computed from each office's fixed cycle.
 
 ### 👥 People & Coalitions
+- **🪪 Member Command Profile** (City Hall) — *everything about a member on one fast screen:* legislative record, **fiscal footprint** (discretionary funding + authoritative sources), **what drives their priorities**, district, **interests & social media**, background, and your notes — all assembled **in parallel** so it lands in seconds.
+- **📖 Law Wiki** (Legislation) — a wiki page per bill: what it does, **whether it's been tried elsewhere** (web-sourced precedents), **alternative designs**, **where in NYC it hits hardest**, **what it'd take to work** (agency/funding/staffing/enforcement), and a labeled impact read — plus notes.
 - **📖 CM Wiki** — a personality-driven page per Council Member: an AI *legislative persona* (style only, grounded in the record), their prime-sponsored decisions, policy focus and coalition, and a tool that **estimates their lean on any issue** from their sponsorship record (a labeled inference, not a vote prediction) — optionally **blended with how they actually voted** on related roll-calls.
 - **📊 Policy Grid** — a member × policy-area heatmap: every member's whole topic portfolio at once, plus who owns each issue.
 - **Members, Dossier, Compare** — a member's record by year, prime vs. co-sponsor, outcomes, and head-to-head comparison.

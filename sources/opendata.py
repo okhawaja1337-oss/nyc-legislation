@@ -92,19 +92,22 @@ FISCAL_LINKS = {
 }
 
 
-def discretionary_funding(member, token=None):
+def discretionary_funding(member, token=None, dataset_url=None, sponsor_field=None):
     """Best-effort discretionary-funding rows for a Council member. [] on any failure.
 
-    Returns [{sponsor, organization, amount, purpose, agency, fiscal_year}] where
-    available. Field names are matched flexibly since they drift year to year.
+    Returns [{organization, amount, purpose, agency, fiscal_year}] where available.
+    Pin an exact source by passing `dataset_url` (a Socrata resource .json URL) and
+    `sponsor_field` (the column holding the member's name); otherwise it tries the
+    default dataset and a few common field names, since NYC's IDs/fields drift.
     """
     last = (member or "").split()[-1] if member else ""
     if not last:
         return []
-    # Try a couple of plausible sponsor-name fields with a case-insensitive LIKE.
-    for field in ("council_member", "sponsor", "councilmember", "member"):
+    url = (dataset_url or DISCRETIONARY).strip()
+    fields = [sponsor_field] if sponsor_field else ["council_member", "sponsor", "councilmember", "member"]
+    for field in fields:
         params = {"$where": f"upper({field}) like upper('%{last}%')", "$limit": 200}
-        data = _get(DISCRETIONARY, params, token=token)
+        data = _get(url, params, token=token)
         if not data:
             continue
         out = []

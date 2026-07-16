@@ -1208,6 +1208,14 @@ def _get_index(rows):
         st.session_state["_search_index"] = _retrieval.Index.build(rows, _retrieval.bill_text)
         st.session_state["_index_key"] = key
     return st.session_state["_search_index"]
+
+
+def _open_full_profile(who, key):
+    """Route any member selection to the unified Member Command Profile (City Hall)."""
+    if st.button("🪪 Open full Member Command Profile →", key=key, use_container_width=True):
+        st.session_state["focus_member"] = who
+        st.session_state["mp_pending"] = who
+        st.success(f"Building **{who}**'s full profile — open **🏙️ City Hall → 🪪 Member Profile** to view it.")
 try:
     from sources import nystate as _nys, congress as _cong
 except Exception:  # keep the app up even if a source module has an issue
@@ -3163,6 +3171,8 @@ with t_profile:
         members = get_directory()
         who = st.selectbox("Council Member", members, key="prof_nyc") if members else \
             st.text_input("Member last name", key="prof_nyc_txt")
+        if who:
+            _open_full_profile(who, "prof_openfull")
         if who and st.button("Build profile", key="prof_nyc_go", type="primary"):
             with st.spinner("Assembling record…"):
                 try:
@@ -3476,11 +3486,13 @@ with t_wiki:
         who = st.selectbox("Council Member", allm, key="wiki_member")
         if who:
             _mem().log("view", "member", who)
-            mnc = st.columns([1, 4])
+            mnc = st.columns([1, 1, 2])
             if mnc[0].button(("★ Following" if _mem().is_following("member", who) else "☆ Follow"),
                              key="wiki_follow"):
                 (_mem().unfollow if _mem().is_following("member", who) else _mem().follow)("member", who)
                 st.rerun()
+            with mnc[1]:
+                _open_full_profile(who, "wiki_openfull")
             mb = member_bills(rows, who)
             stats = dossier_stats(mb, who)
             _p3 = sum(1 for r in mb if who.split()[-1].lower() in (r.get("Prime Sponsor", "") or "").lower())
@@ -3932,15 +3944,18 @@ with t_memory:
 # ============================================================================
 # 🪪 MEMBER COMMAND PROFILE — everything about a CM on one fast screen
 # ============================================================================
-def _assemble_member_profile(who, stats):
+def _assemble_member_profile(who, stats, fiscal_cfg=None):
     """Fetch every slow section concurrently so the page lands in a few seconds."""
+    fiscal_cfg = fiscal_cfg or {}
     out = {"stats": stats}
     jobs = {
         "wiki": lambda: (_media.wiki_summary(who) if _media else {}),
         "enrich": lambda: _profiles.enrichment(_get_llm(smart=True), who),
         "why": lambda: _profiles.why_support(_get_llm(smart=True), who, stats),
         "persona": lambda: _profiles.persona(_get_llm(smart=True), who, stats),
-        "disc": lambda: (_od2.discretionary_funding(who) if _od2 else []),
+        "disc": lambda: (_od2.discretionary_funding(
+            who, dataset_url=fiscal_cfg.get("url") or None,
+            sponsor_field=fiscal_cfg.get("field") or None) if _od2 else []),
     }
     with ThreadPoolExecutor(max_workers=5) as ex:
         futs = {k: ex.submit(fn) for k, fn in jobs.items()}
@@ -3960,17 +3975,35 @@ with t_memberprofile:
         st.info("Load legislation **with sponsors** (⚙️ panel) so the profile can read each member's record.")
     else:
         allm = list(_analysis.member_names(rows).keys())
+        # If another screen sent us here ("Open full profile"), pre-select + auto-build.
+        _pending = st.session_state.pop("mp_pending", None)
+        if _pending and _pending in allm:
+            st.session_state["mp_member"] = _pending
         who = st.selectbox("Council Member", allm, key="mp_member")
         if who:
+            st.session_state["focus_member"] = who
             _mem().log("view", "member", who)
             mb = member_bills(rows, who); stats = dossier_stats(mb, who)
             skey = f"mprof_{who}"
+            _autobuild = bool(_pending) and _pending == who and skey not in st.session_state
             bcol = st.columns([1, 1, 3])
-            if bcol[0].button("⚡ Build full profile", type="primary", key="mp_build"):
+            if bcol[0].button("⚡ Build full profile", type="primary", key="mp_build") or _autobuild:
                 with st.spinner("Assembling in parallel — record, fiscal, web, notes…"):
-                    st.session_state[skey] = _assemble_member_profile(who, stats)
+                    st.session_state[skey] = _assemble_member_profile(
+                        who, stats, fiscal_cfg=st.session_state.get("fiscal_cfg"))
             if bcol[1].button(("★ Following" if _mem().is_following("member", who) else "☆ Follow"), key="mp_follow"):
                 (_mem().unfollow if _mem().is_following("member", who) else _mem().follow)("member", who); st.rerun()
+            with st.expander("⚙️ Pin fiscal dataset (advanced — for exact discretionary-funding data)"):
+                _fc = st.session_state.get("fiscal_cfg") or _store.load("fiscal_cfg", {})
+                fu = st.text_input("Socrata dataset .json URL", _fc.get("url", ""), key="fiscal_url",
+                                   help="e.g. https://data.cityofnewyork.us/resource/XXXX-XXXX.json")
+                ff = st.text_input("Sponsor / member column name", _fc.get("field", ""), key="fiscal_field",
+                                   help="the column holding the Council Member's name in that dataset")
+                if st.button("📌 Pin dataset", key="fiscal_pin"):
+                    cfg = {"url": fu.strip(), "field": ff.strip()}
+                    st.session_state["fiscal_cfg"] = cfg; _store.save("fiscal_cfg", cfg)
+                    st.success("Pinned — rebuild the profile to use it.")
+                st.caption("Leave blank to use the default dataset with flexible field matching. The pin persists.")
             prof = st.session_state.get(skey)
             if not prof:
                 st.caption("Press **Build full profile** — or open a lighter view under People → CM Wiki.")

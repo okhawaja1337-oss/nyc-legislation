@@ -79,6 +79,53 @@ def complaint_counts(since, until, dataset="historic", token=None):
     return out
 
 
+# Council discretionary ("member item") funding — the clearest read on a member's
+# fiscal footprint. NYC Open Data publishes it; the resource id and field names have
+# shifted across fiscal years, so this is best-effort and degrades to links.
+DISCRETIONARY = "https://data.cityofnewyork.us/resource/nsr4-355a.json"
+FISCAL_LINKS = {
+    "Checkbook NYC (spending)": "https://www.checkbooknyc.com/",
+    "Council Finance Division": "https://council.nyc.gov/budget/",
+    "Adopted Budget (OMB)": "https://www.nyc.gov/site/omb/publications/publications.page",
+    "IBO (independent budget office)": "https://ibo.nyc.ny.us/",
+    "Discretionary funding data": "https://data.cityofnewyork.us/City-Government/Local-Law-15-Council-Discretionary-Funding/nsr4-355a",
+}
+
+
+def discretionary_funding(member, token=None):
+    """Best-effort discretionary-funding rows for a Council member. [] on any failure.
+
+    Returns [{sponsor, organization, amount, purpose, agency, fiscal_year}] where
+    available. Field names are matched flexibly since they drift year to year.
+    """
+    last = (member or "").split()[-1] if member else ""
+    if not last:
+        return []
+    # Try a couple of plausible sponsor-name fields with a case-insensitive LIKE.
+    for field in ("council_member", "sponsor", "councilmember", "member"):
+        params = {"$where": f"upper({field}) like upper('%{last}%')", "$limit": 200}
+        data = _get(DISCRETIONARY, params, token=token)
+        if not data:
+            continue
+        out = []
+        for r in data:
+            amt = r.get("amount") or r.get("funding_amount") or r.get("award_amount")
+            try:
+                amt = float(amt) if amt is not None else None
+            except (TypeError, ValueError):
+                amt = None
+            out.append({
+                "organization": r.get("organization_name") or r.get("organization") or r.get("vendor") or "",
+                "amount": amt,
+                "purpose": r.get("purpose_of_funds") or r.get("purpose") or r.get("description") or "",
+                "agency": r.get("agency") or r.get("administering_agency") or "",
+                "fiscal_year": r.get("fiscal_year") or r.get("fy") or "",
+            })
+        if out:
+            return out
+    return []
+
+
 def crime_snapshot(since, until, categories=None, dataset="historic", token=None):
     """Roll raw offense counts up into friendly categories, each with a citation.
 

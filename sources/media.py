@@ -82,6 +82,33 @@ def wiki_photo(name, context="New York City Council", timeout=15):
     return None, None
 
 
+def wiki_summary(name, context="New York City Council", timeout=15):
+    """Portrait + short extract + page URL from Wikipedia. Dict; keys may be None."""
+    if not requests or not (name or "").strip():
+        return {"photo": None, "extract": "", "url": None}
+    params = {
+        "action": "query", "format": "json", "generator": "search",
+        "gsrsearch": f"{name} {context}".strip(), "gsrlimit": 1,
+        "prop": "pageimages|info|extracts", "piprop": "thumbnail", "pithumbsize": 400,
+        "exintro": 1, "explaintext": 1, "exchars": 600, "inprop": "url", "origin": "*",
+    }
+    for attempt in range(2):
+        try:
+            r = requests.get(_WIKI_SEARCH, params=params, timeout=timeout,
+                             headers={"User-Agent": "nyc-legislative-intelligence/1.0"})
+            if r.status_code == 200:
+                pages = ((r.json() or {}).get("query") or {}).get("pages") or {}
+                for _, p in pages.items():
+                    return {"photo": (p.get("thumbnail") or {}).get("source"),
+                            "extract": (p.get("extract") or "").strip(),
+                            "url": p.get("fullurl")}
+                return {"photo": None, "extract": "", "url": None}
+            time.sleep(1)
+        except requests.exceptions.RequestException:
+            time.sleep(1)
+    return {"photo": None, "extract": "", "url": None}
+
+
 def portrait_html(name, photo_url=None, size=64):
     """A circular portrait <img> if a photo URL is given, else the SVG avatar."""
     if photo_url:

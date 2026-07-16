@@ -74,6 +74,50 @@ def persona(llm, name, stats):
         return ""
 
 
+WHY_PROMPT = """Based ONLY on this member's legislative record (topic mix, what they
+prime-sponsor vs. co-sponsor, outcomes, frequent partners) — and, via web search,
+their own public statements and district — explain what appears to drive this NYC
+Council Member's priorities. Frame as INFERENCE from the record and cited public
+sources, never as a claim about private motives. ~120 words, 3–4 bullets, then a
+one-line caveat that this is analysis of a public record, not a statement of the
+member's views.
+
+MEMBER: {name}
+RECORD (JSON): {data}
+"""
+
+ENRICH_PROMPT = """Using web search, gather quick reference facts about NYC Council
+Member {name}. Return ONLY a JSON object with keys (use "" / [] when unknown, never
+guess): "district" (number as string), "party", "committees" (array of committee
+names), "background" (<=25 words on prior career/roots), "interests" (array of
+policy interests), "social" (object like {{"x":"handle","instagram":"...","website":"..."}}),
+"sources" (array of URLs used). Do not invent handles or facts."""
+
+
+def why_support(llm, name, stats, allow_web=True):
+    if not (llm and llm.ready):
+        return ""
+    import json as _json
+    try:
+        return llm.complete(WHY_PROMPT.format(name=name, data=_json.dumps(stats, ensure_ascii=False)[:5000]),
+                            max_tokens=500, system=PROFILE_STYLE, allow_web=allow_web)
+    except Exception:
+        return ""
+
+
+def enrichment(llm, name, allow_web=True):
+    """Web-sourced reference facts (committees, interests, socials). {} if unavailable."""
+    if not (llm and llm.ready):
+        return {}
+    import llm as _llmmod
+    try:
+        txt = llm.complete(ENRICH_PROMPT.format(name=name), max_tokens=700, allow_web=allow_web)
+        data = _llmmod.extract_json(txt)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def council_facts(name, stats, district=None, committees=None):
     """Shape a NYC Council member's facts from dossier stats + optional extras."""
     s = stats or {}

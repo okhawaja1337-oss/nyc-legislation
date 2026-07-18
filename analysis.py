@@ -93,6 +93,46 @@ def _partner_breadth(rows, member):
     return len(partners)
 
 
+def _passed(status):
+    return any(w in (status or "").lower() for w in ("enact", "adopt", "approv", "passed"))
+
+
+def committee_stats(rows):
+    """Per-committee throughput from the loaded bills.
+
+    Returns rows of {committee, total, enacted, in_committee, other, pass_rate}
+    sorted by volume — a quick read on which committees move bills vs. sit on them.
+    """
+    d = {}
+    for r in rows:
+        c = (r.get("Committee/Body") or "").strip()
+        if not c:
+            continue
+        v = d.setdefault(c, {"committee": c, "total": 0, "enacted": 0, "in_committee": 0, "other": 0})
+        v["total"] += 1
+        s = (r.get("Status") or "").lower()
+        if _passed(s):
+            v["enacted"] += 1
+        elif "committee" in s:
+            v["in_committee"] += 1
+        else:
+            v["other"] += 1
+    out = list(d.values())
+    for v in out:
+        v["pass_rate"] = round(100 * v["enacted"] / v["total"]) if v["total"] else 0
+    out.sort(key=lambda x: -x["total"])
+    return out
+
+
+def committee_row(rows, committee):
+    """Throughput for one committee (or None)."""
+    committee = (committee or "").strip()
+    for v in committee_stats(rows):
+        if v["committee"] == committee:
+            return v
+    return None
+
+
 def policy_topics(rows):
     """Distinct policy topics present in the loaded set (from Topic tags)."""
     s = set()

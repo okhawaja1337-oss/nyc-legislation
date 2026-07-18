@@ -1184,6 +1184,7 @@ import memory as _memory
 import retrieval as _retrieval
 import lawwiki as _wiki
 import profiles as _profiles
+import council as _council
 try:
     from sources import opendata as _od2
 except Exception:
@@ -1423,6 +1424,24 @@ with st.expander("⚙️  Data controls — choose what to load, then press Load
     anthropic_key = b2.text_input("Anthropic key (optional)", "", type="password")
     b3.write(""); b3.write("")
     load = b3.button("⟳  Load data", type="primary")
+    cc1, cc2 = st.columns([1.3, 2.3])
+    use_council = cc1.checkbox("🏛️ Use LLM Council for analysis", value=st.session_state.get("use_council", False),
+                               help="Route prose analysis (law wiki, enforcement, briefings, influence, profiles) "
+                                    "through multi-model council deliberation. Falls back to the single model if the "
+                                    "council server is offline.")
+    council_url = cc2.text_input("Council server URL", st.session_state.get("council_url", "") or _council.DEFAULT_URL,
+                                 help="LLM Council Plus server (default http://localhost:8001).")
+    st.session_state["use_council"] = use_council
+    st.session_state["council_url"] = council_url.strip()
+    if use_council:
+        _cav = False
+        try:
+            _cav = _council.available(council_url.strip() or None)
+        except Exception:
+            _cav = False
+        st.caption(("🟢 Council reachable — prose analysis will deliberate across models."
+                    if _cav else "🟡 Council not reachable right now — analysis falls back to the single model "
+                    "until the server is up.") + "  JSON steps (idea generation, enrichment) always use the single model.")
     st.caption("First load of a full year reads live from NYC's servers (seconds–minutes); cached and instant after. "
                "Single-bill and member scopes are fastest.")
 
@@ -2312,7 +2331,9 @@ def _get_llm(smart=False):
     """Build the shared LLM client from the key in the controls panel."""
     key = (anthropic_key or "").strip() or os.environ.get("ANTHROPIC_API_KEY")
     model = _llm.SMART_MODEL if smart else _llm.FAST_MODEL
-    return _llm.LLM(api_key=key, model=model)
+    return _llm.LLM(api_key=key, model=model,
+                    use_council=st.session_state.get("use_council", False),
+                    council_url=st.session_state.get("council_url") or None)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)

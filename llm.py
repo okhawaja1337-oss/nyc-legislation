@@ -38,15 +38,30 @@ class LLM:
         obj  = llm.complete_json("Return {\"a\":1}")
     """
 
-    def __init__(self, api_key=None, model=FAST_MODEL, pause=0.0):
+    def __init__(self, api_key=None, model=FAST_MODEL, pause=0.0,
+                 use_council=False, council_url=None):
         self.key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self.model = model
         self.pause = pause
         self.s = requests.Session() if requests else None
+        self.use_council = bool(use_council)
+        self.council_url = council_url
 
     @property
     def ready(self):
+        # Ready if we can reach a model — either the council or a direct key.
+        if self.use_council and self._council_ready():
+            return True
         return bool(self.key) and self.s is not None
+
+    def _council_ready(self):
+        if not self.use_council:
+            return False
+        try:
+            import council as _council
+            return _council.available(self.council_url)
+        except Exception:
+            return False
 
     def _post(self, body, timeout=150):
         if not self.key:
@@ -76,8 +91,25 @@ class LLM:
         raise RuntimeError("LLM request failed")
 
     def complete(self, prompt, max_tokens=1600, model=None, allow_web=False,
-                 system=None, timeout=180):
-        """Return the model's text for a single-turn prompt."""
+                 system=None, timeout=180, allow_council=True):
+        """Return the model's text for a single-turn prompt.
+
+        When council routing is on (and `allow_council`), the prompt goes through
+        the multi-model council deliberation; on any failure it falls back to the
+        single Anthropic model so nothing breaks.
+        """
+        if self.use_council and allow_council:
+            try:
+                import council as _council
+                content = (system + "\n\n" + prompt) if system else prompt
+                resp = _council.deliberate(content, base_url=self.council_url,
+                                           web_search=allow_web, timeout=max(timeout, 300))
+                if resp:
+                    return resp.strip()
+            except Exception:
+                pass  # fall back to the single model below
+        if not self.key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
         body = {"model": model or self.model, "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": prompt}]}
         if system:
@@ -89,8 +121,11 @@ class LLM:
                        if b.get("type") == "text").strip()
 
     def complete_json(self, prompt, max_tokens=1400, model=None, timeout=120):
-        """Return a parsed JSON object from the model, recovering from fences/prose."""
-        txt = self.complete(prompt, max_tokens=max_tokens, model=model, timeout=timeout)
+        """Return a parsed JSON object from the model, recovering from fences/prose.
+
+        JSON stays on the single model (council synthesis isn't reliably JSON)."""
+        txt = self.complete(prompt, max_tokens=max_tokens, model=model, timeout=timeout,
+                            allow_council=False)
         return extract_json(txt)
 
 

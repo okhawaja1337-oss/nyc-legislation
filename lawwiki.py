@@ -75,6 +75,51 @@ def law_wiki(llm, row, text="", data_ctx="", allow_web=True):
         return f"_(couldn't build the wiki entry: {e})_"
 
 
+ENFORCE_PROMPT = """Assess how this NYC law is being IMPLEMENTED and ENFORCED (most
+useful once it's enacted). Use web search for real agency reports, local-law
+reporting data, oversight hearings, and news. Ground every claim; cite the source
+and year; if you can't verify something, say so — never invent enforcement
+figures or reports. Output Markdown with these sections:
+
+## {file} — enforcement & implementation
+**Responsible agency/department:** name the NYC agency that administers/enforces it (and the committee that oversees them).
+
+**Does it fit the department's policy?**
+- 2–3 bullets on whether the law aligns with that agency's stated mission/rules/priorities, or cuts against them.
+
+**Implementation status**
+- Is it in effect? Were required rules (RCNY) promulgated, deadlines met, programs stood up? Cite what you find.
+
+**Enforcement reports & data**
+- Real reports or data on enforcement/usage — many NYC local laws carry reporting requirements; agencies publish stats; the Council holds oversight hearings. Cite source + year. Name the NYC Open Data / agency dataset to check if you can't find a figure.
+
+**Problems enforcing it**
+- Documented gaps, under-enforcement, litigation, funding/staffing shortfalls, or agency pushback — with sources. Say "no issues found in sources" if that's the case.
+
+**What staff should check**
+- 2–3 concrete places to verify (specific report, dataset, oversight hearing, FOIL).
+
+BILL
+File: {file} | Type: {type} | Status: {status} | Committee: {committee}
+Title: {title}
+Text (excerpt): {text}
+"""
+
+
+def enforcement_report(llm, row, text="", allow_web=True):
+    """Web-sourced implementation/enforcement assessment for a (usually enacted) law."""
+    if not (llm and llm.ready):
+        return ""
+    prompt = ENFORCE_PROMPT.format(
+        file=row.get("File", ""), type=row.get("Type", ""), status=row.get("Status", ""),
+        committee=row.get("Committee/Body") or row.get("Committee", ""),
+        title=row.get("Title") or row.get("Summary", ""), text=(text or row.get("Name", ""))[:6000])
+    try:
+        return llm.complete(prompt, max_tokens=1800, system=WIKI_STYLE, allow_web=allow_web)
+    except Exception as e:
+        return f"_(couldn't build the enforcement report: {e})_"
+
+
 # Sub-generators (used for on-demand, section-at-a-time speed if desired).
 _SECTION_PROMPTS = {
     "precedents": ("Has anything like this NYC bill been tried in other U.S. cities or states? "

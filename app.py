@@ -1826,6 +1826,11 @@ with t_detail:
         _dw = st.columns([1, 3])
         with _dw[0]:
             _open_law_wiki(r["File"], "detail_openwiki")
+        _cr_d = _analysis.committee_row(rows, r.get("Committee/Body", ""))
+        if _cr_d:
+            st.caption(f"📊 **{_cr_d['committee']}** (loaded set): {_cr_d['total']} bills · {_cr_d['enacted']} enacted "
+                       f"· {_cr_d['in_committee']} in committee · **{_cr_d['pass_rate']}%** pass rate. "
+                       "Full enforcement & implementation read is on the **📖 Law Wiki** tab.")
 
         st.markdown("### 🔬 Full policy analysis")
         _an = st.session_state.get("analyses", {}).get(mid)
@@ -2211,6 +2216,15 @@ with t_over:
         sc = status_counts(rows)
         if sc:
             c2.subheader("By status"); c2.bar_chart(pd.Series(sc))
+        cstats = _analysis.committee_stats(rows)
+        if cstats:
+            st.subheader("🏛️ Committee performance — who moves bills vs. sits on them")
+            st.caption("From the loaded set: how many bills each committee holds, how many it has moved to enactment, "
+                       "and how many are still stuck in committee.")
+            st.dataframe(pd.DataFrame([{"Committee": v["committee"], "Bills": v["total"],
+                "Enacted": v["enacted"], "In committee": v["in_committee"], "Other": v["other"],
+                "Pass rate %": v["pass_rate"]} for v in cstats]),
+                hide_index=True, use_container_width=True, height=min(560, 80 + 30 * len(cstats)))
 
 # ---------------- WHAT CHANGED ----------------
 with t_changes:
@@ -4159,14 +4173,31 @@ with t_lawwiki:
         r = next(x for x in rows if x["File"] == pick)
         st.session_state["focus_bill"] = r["File"]
         _mem().log("view", "bill", r["File"])
+        _cr = _analysis.committee_row(rows, r.get("Committee/Body", ""))
+        if _cr:
+            st.caption(f"🏛️ **Committee:** {_cr['committee']} — in the loaded set this committee holds "
+                       f"**{_cr['total']}** bills · {_cr['enacted']} enacted · {_cr['in_committee']} still in committee "
+                       f"· **{_cr['pass_rate']}%** pass rate.")
         lw_llm = _get_llm(smart=True)
         if not lw_llm.ready:
             st.info("Add your **Anthropic key** (⚙️ panel) to build the wiki entry (uses web search for real "
                     "precedents). The bill's facts are on the **Bill detail** tab meanwhile.")
         else:
             skey = f"lawwiki_{r['File']}"
+            ekey = f"lawenf_{r['File']}"
             _lw_auto = bool(_lwp) and _lwp == r["File"] and skey not in st.session_state
-            if st.button("📖 Build law wiki (web-sourced)", type="primary", key="lw_go") or _lw_auto:
+            _bw = st.columns(2)
+            if _bw[1].button("⚖️ Enforcement & implementation report", key="lw_enf", use_container_width=True):
+                with st.spinner("Checking the responsible agency, its policy, enforcement reports & gaps…"):
+                    _txe = bundle.get("text_map", {}).get(r["MatterId"], "")
+                    if not _txe:
+                        try:
+                            _txe = fetch_detail(r["MatterId"]).get("text", "")
+                        except Exception:
+                            pass
+                    st.session_state[ekey] = _wiki.enforcement_report(lw_llm, r, text=_txe, allow_web=True)
+            if _bw[0].button("📖 Build law wiki (web-sourced)", type="primary", key="lw_go",
+                             use_container_width=True) or _lw_auto:
                 with st.spinner("Researching precedents and building the entry…"):
                     mid = r["MatterId"]
                     tx = bundle.get("text_map", {}).get(mid, "")
@@ -4199,3 +4230,15 @@ with t_lawwiki:
                 for nt in _mem().notes_for("bill", r["File"]):
                     st.markdown(f"- {nt['note']}")
                 st.caption("Web-sourced precedents and AI analysis — verify specifics; figures are flagged to check.")
+            enf = st.session_state.get(ekey)
+            if enf:
+                st.divider()
+                st.markdown("### ⚖️ Enforcement & implementation")
+                st.markdown(f'<div class="brief">{_brief.md_to_html(enf)}</div>', unsafe_allow_html=True)
+                enfc = st.columns(2)
+                enfc[0].download_button("⬇️ Markdown", enf, f"enforcement_{r['File'].replace(' ','_')}.md",
+                                        "text/markdown", key="lw_enf_dl", use_container_width=True)
+                if enfc[1].button("💾 Save to Knowledge base", key="lw_enf_save", use_container_width=True):
+                    _mem().save_item("enforcement", r["File"], enf); st.success("Saved.")
+                st.caption("Implementation/enforcement is web-sourced — confirm against the cited agency reports, "
+                           "oversight hearings, and NYC Open Data before relying on it.")

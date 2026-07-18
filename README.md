@@ -122,6 +122,20 @@ dataset) need no key.
 
 ---
 
+## LLM Council (optional multi-model deliberation)
+
+Turn on **"🏛️ Use LLM Council for analysis"** in the ⚙️ controls to route the app's
+**prose analysis** — Law Wiki, Enforcement report, briefings, Influence Map,
+member "why they support"/persona, district profiles, statements — through a
+running [LLM Council Plus](https://github.com/jacob-bd/llm-council-plus) server's
+3-stage deliberation (individual models → anonymous peer ranking → chairman
+synthesis) instead of a single model. Point it at your server URL (default
+`http://localhost:8001`, or set `LLM_COUNCIL_URL`).
+
+It **degrades gracefully**: if the council server is offline, analysis falls back
+to the single model automatically. JSON steps (idea generation, enrichment) always
+use the single model, since council synthesis isn't reliably structured JSON.
+
 ## Data vs. analysis — the ground rule
 
 - **Facts** (bills, sponsors, votes, members, districts) come from official APIs and are presented as-is.

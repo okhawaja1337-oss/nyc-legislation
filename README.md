@@ -136,6 +136,12 @@ It **degrades gracefully**: if the council server is offline, analysis falls bac
 to the single model automatically. JSON steps (idea generation, enrichment) always
 use the single model, since council synthesis isn't reliably structured JSON.
 
+## Speed & responsiveness
+
+- **Background execution** — the heaviest analyses (Law Wiki, Enforcement report) run **off the main thread** with a live progress indicator, so the rest of the app stays usable while a multi-model council deliberation runs. Results cache per session, so re-opening is instant.
+- **Parallel assembly** — the Member Command Profile fires its web/AI/data calls concurrently (lands in seconds, not one-by-one).
+- **Caching & memoization** — live API pulls are cached with TTLs; the search index and hot aggregates are memoized per data-load; the fast search is a local index (no network). Falls back to synchronous mode automatically if the Streamlit runtime lacks fragments.
+
 ## Data vs. analysis — the ground rule
 
 - **Facts** (bills, sponsors, votes, members, districts) come from official APIs and are presented as-is.

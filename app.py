@@ -1216,6 +1216,14 @@ def _open_full_profile(who, key):
         st.session_state["focus_member"] = who
         st.session_state["mp_pending"] = who
         st.success(f"Building **{who}**'s full profile — open **🏙️ City Hall → 🪪 Member Profile** to view it.")
+
+
+def _open_law_wiki(file, key):
+    """Route any bill selection to the unified Law Wiki (Legislation)."""
+    if st.button("📖 Open Law Wiki →", key=key, use_container_width=True):
+        st.session_state["focus_bill"] = file
+        st.session_state["lw_pending"] = file
+        st.success(f"Building the **{file}** law wiki — open **📜 Legislation → 📖 Law Wiki** to view it.")
 try:
     from sources import nystate as _nys, congress as _cong
 except Exception:  # keep the app up even if a source module has an issue
@@ -1815,6 +1823,9 @@ with t_detail:
         d[2].write("**Committee**"); d[2].write(r["Committee/Body"] or "-")
         st.markdown(f"[➡ Open on the official Legistar site]({r['Web Link']})")
         st.markdown(f"**Topic tags:** {r.get('Topic tags','') or '—'}  \n**Boroughs named:** {r.get('Boroughs named','')}")
+        _dw = st.columns([1, 3])
+        with _dw[0]:
+            _open_law_wiki(r["File"], "detail_openwiki")
 
         st.markdown("### 🔬 Full policy analysis")
         _an = st.session_state.get("analyses", {}).get(mid)
@@ -4107,8 +4118,14 @@ with t_lawwiki:
     if not bundle:
         need_data()
     else:
-        pick = st.selectbox("Pick a bill", [r["File"] for r in rows], key="lw_bill")
+        _files = [r["File"] for r in rows]
+        # If another screen sent us here ("Open law wiki"), pre-select + auto-build.
+        _lwp = st.session_state.pop("lw_pending", None)
+        if _lwp and _lwp in _files:
+            st.session_state["lw_bill"] = _lwp
+        pick = st.selectbox("Pick a bill", _files, key="lw_bill")
         r = next(x for x in rows if x["File"] == pick)
+        st.session_state["focus_bill"] = r["File"]
         _mem().log("view", "bill", r["File"])
         lw_llm = _get_llm(smart=True)
         if not lw_llm.ready:
@@ -4116,7 +4133,8 @@ with t_lawwiki:
                     "precedents). The bill's facts are on the **Bill detail** tab meanwhile.")
         else:
             skey = f"lawwiki_{r['File']}"
-            if st.button("📖 Build law wiki (web-sourced)", type="primary", key="lw_go"):
+            _lw_auto = bool(_lwp) and _lwp == r["File"] and skey not in st.session_state
+            if st.button("📖 Build law wiki (web-sourced)", type="primary", key="lw_go") or _lw_auto:
                 with st.spinner("Researching precedents and building the entry…"):
                     mid = r["MatterId"]
                     tx = bundle.get("text_map", {}).get(mid, "")

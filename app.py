@@ -2336,6 +2336,83 @@ def _get_llm(smart=False):
                     council_url=st.session_state.get("council_url") or None)
 
 
+# --- speed: memoize pure aggregates for the current data (recomputed only on new load) ---
+def _memo(name, fn):
+    ident = (st.session_state.get("loaded_year", ""), len(rows) if bundle else 0)
+    cache = st.session_state.setdefault("_memo", {})
+    if cache.get("_ident") != ident:
+        cache.clear(); cache["_ident"] = ident
+    if name not in cache:
+        cache[name] = fn()
+    return cache[name]
+
+
+def member_names_c():
+    return _memo("member_names", lambda: _analysis.member_names(rows))
+
+
+def committee_stats_c():
+    return _memo("committee_stats", lambda: _analysis.committee_stats(rows))
+
+
+def member_data_c(who):
+    return _memo(f"mdata::{who}", lambda: (member_bills(rows, who), dossier_stats(member_bills(rows, who), who)))
+
+
+# --- speed/UX: run heavy analysis in a background thread with a live progress poll ---
+@st.cache_resource(show_spinner=False)
+def _bg_pool():
+    from concurrent.futures import ThreadPoolExecutor
+    return ThreadPoolExecutor(max_workers=6)
+
+
+def _bg_start(job_id, fn):
+    jobs = st.session_state.setdefault("_bgjobs", {})
+    if job_id not in jobs:
+        jobs[job_id] = _bg_pool().submit(fn)
+
+
+def _bg_status(job_id):
+    fut = st.session_state.get("_bgjobs", {}).get(job_id)
+    if fut is None:
+        return "idle", None
+    if fut.done():
+        try:
+            return "done", fut.result()
+        except Exception as e:
+            return "done", f"_(failed: {e})_"
+    return "running", None
+
+
+def run_background(job_id, fn, result_key, running_msg):
+    """Run fn() off the main thread; when done, stash into result_key and rerun.
+
+    Uses an auto-refreshing fragment to poll without freezing the rest of the app;
+    falls back to a synchronous spinner if fragments aren't available.
+    """
+    if result_key in st.session_state:
+        return  # already have the result; normal flow renders it
+    if not hasattr(st, "fragment"):
+        with st.spinner(running_msg):
+            _bg_start(job_id, fn)
+            st.session_state[result_key] = st.session_state["_bgjobs"][job_id].result()
+        st.session_state.get("_bgjobs", {}).pop(job_id, None)
+        return
+
+    @st.fragment(run_every=1.5)
+    def _poll():
+        _bg_start(job_id, fn)
+        status, res = _bg_status(job_id)
+        if status == "running":
+            st.info(running_msg)
+            st.caption("Running in the background — you can keep using the rest of the app.")
+        elif status == "done":
+            st.session_state[result_key] = res
+            st.session_state.get("_bgjobs", {}).pop(job_id, None)
+            st.rerun()
+    _poll()
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def load_federal_delegation():
     """NYC's U.S. House members + both NY senators (no key needed)."""
@@ -3528,7 +3605,7 @@ with t_wiki:
         st.info("Load legislation **with sponsors** (⚙️ panel: *All legislation* + *Include sponsors*) so the Wiki can "
                 "read each member's record.")
     else:
-        allm = list(_analysis.member_names(rows).keys())
+        allm = list(member_names_c().keys())
         who = st.selectbox("Council Member", allm, key="wiki_member")
         if who:
             _mem().log("view", "member", who)
@@ -4026,7 +4103,7 @@ with t_memberprofile:
     if not (bundle and any(r.get("_sponsor_names") for r in rows)):
         st.info("Load legislation **with sponsors** (⚙️ panel) so the profile can read each member's record.")
     else:
-        allm = list(_analysis.member_names(rows).keys())
+        allm = list(member_names_c().keys())
         # If another screen sent us here ("Open full profile"), pre-select + auto-build.
         _pending = st.session_state.pop("mp_pending", None)
         if _pending and _pending in allm:
@@ -4207,32 +4284,40 @@ with t_lawwiki:
             skey = f"lawwiki_{r['File']}"
             ekey = f"lawenf_{r['File']}"
             _lw_auto = bool(_lwp) and _lwp == r["File"] and skey not in st.session_state
+
+            def _bill_text():  # prepared synchronously (cached fetch) before backgrounding the AI call
+                mid = r["MatterId"]; tx = bundle.get("text_map", {}).get(mid, ""); sp = r.get("_sponsor_objs", [])
+                if not tx or not sp:
+                    try:
+                        d0 = fetch_detail(mid); tx = tx or d0.get("text", "")
+                        sp = sp or current_sponsors({"MatterVersion": None}, d0.get("sponsors", []))
+                    except Exception:
+                        pass
+                return tx, sp
+
             _bw = st.columns(2)
-            if _bw[1].button("⚖️ Enforcement & implementation report", key="lw_enf", use_container_width=True):
-                with st.spinner("Checking the responsible agency, its policy, enforcement reports & gaps…"):
-                    _txe = bundle.get("text_map", {}).get(r["MatterId"], "")
-                    if not _txe:
-                        try:
-                            _txe = fetch_detail(r["MatterId"]).get("text", "")
-                        except Exception:
-                            pass
-                    st.session_state[ekey] = _wiki.enforcement_report(lw_llm, r, text=_txe, allow_web=True)
-            if _bw[0].button("📖 Build law wiki (web-sourced)", type="primary", key="lw_go",
-                             use_container_width=True) or _lw_auto:
-                with st.spinner("Researching precedents and building the entry…"):
-                    mid = r["MatterId"]
-                    tx = bundle.get("text_map", {}).get(mid, "")
-                    sp = r.get("_sponsor_objs", [])
-                    if not tx or not sp:
-                        try:
-                            d0 = fetch_detail(mid); tx = tx or d0.get("text", "")
-                            sp = sp or current_sponsors({"MatterVersion": None}, d0.get("sponsors", []))
-                        except Exception:
-                            pass
-                    rr = dict(r); rr["_sponsor_objs"] = sp
-                    _mem().log("brief", "bill", r["File"])
-                    st.session_state[skey] = _wiki.law_wiki(lw_llm, rr, text=tx,
-                                                            data_ctx=build_data_context(r), allow_web=True)
+            _wiki_go = _bw[0].button("📖 Build law wiki (web-sourced)", type="primary", key="lw_go",
+                                     use_container_width=True) or _lw_auto
+            _enf_go = _bw[1].button("⚖️ Enforcement & implementation report", key="lw_enf", use_container_width=True)
+            if _wiki_go:
+                _tx, _sp = _bill_text(); _rr = dict(r); _rr["_sponsor_objs"] = _sp
+                _dctx = build_data_context(r); _job = f"lawwiki::{r['File']}"
+                st.session_state.pop(skey, None); st.session_state.get("_bgjobs", {}).pop(_job, None)
+                st.session_state["lw_job"] = (_job, skey)
+                st.session_state["lw_fn"] = (lambda rr=_rr, tx=_tx, dc=_dctx:
+                                             _wiki.law_wiki(lw_llm, rr, text=tx, data_ctx=dc, allow_web=True))
+                _mem().log("brief", "bill", r["File"])
+            if _enf_go:
+                _txe, _ = _bill_text(); _job = f"lawenf::{r['File']}"
+                st.session_state.pop(ekey, None); st.session_state.get("_bgjobs", {}).pop(_job, None)
+                st.session_state["enf_job"] = (_job, ekey)
+                st.session_state["enf_fn"] = (lambda tx=_txe:
+                                              _wiki.enforcement_report(lw_llm, r, text=tx, allow_web=True))
+            _wj = st.session_state.get("lw_job")
+            if _wj and _wj[1] == skey and skey not in st.session_state:
+                run_background(_wj[0], st.session_state["lw_fn"], skey,
+                               "🏛️ Building the law wiki (web-sourced" +
+                               (" council deliberation" if lw_llm.use_council else "") + ")…")
             entry = st.session_state.get(skey)
             if entry:
                 st.markdown(f'<div class="brief">{_brief.md_to_html(entry)}</div>', unsafe_allow_html=True)
@@ -4251,6 +4336,10 @@ with t_lawwiki:
                 for nt in _mem().notes_for("bill", r["File"]):
                     st.markdown(f"- {nt['note']}")
                 st.caption("Web-sourced precedents and AI analysis — verify specifics; figures are flagged to check.")
+            _ej = st.session_state.get("enf_job")
+            if _ej and _ej[1] == ekey and ekey not in st.session_state:
+                run_background(_ej[0], st.session_state["enf_fn"], ekey,
+                               "⚖️ Building the enforcement & implementation report…")
             enf = st.session_state.get(ekey)
             if enf:
                 st.divider()

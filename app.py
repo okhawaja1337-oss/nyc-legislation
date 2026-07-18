@@ -3890,6 +3890,12 @@ with t_list:
                         "Relevance": round(s, 3), "Web Link": r.get("Web Link", "")} for r, s in hits]),
                         use_container_width=True, height=420,
                         column_config={"Web Link": st.column_config.LinkColumn("Open", display_text="Open")})
+                    _sh = st.columns([2, 1])
+                    _pickw = _sh[0].selectbox("Open a result in the Law Wiki",
+                                              [r["File"] for r, _s in hits], key="smart_wiki_pick",
+                                              label_visibility="collapsed")
+                    with _sh[1]:
+                        _open_law_wiki(_pickw, "smart_openwiki")
 
 
 # --- Knowledge & Memory tab ---
@@ -4085,6 +4091,32 @@ with t_memberprofile:
                     st.write(wiki["extract"])
                     if wiki.get("url"):
                         st.markdown(f"[Wikipedia ↗]({wiki['url']})")
+
+                # District makeup inline (map is free; demographics on demand)
+                _dnum = None
+                try:
+                    _dnum = int("".join(ch for ch in str(district) if ch.isdigit()))
+                except Exception:
+                    _dnum = None
+                if _dnum and 1 <= _dnum <= 51:
+                    st.markdown(f"#### 🗺️ District {_dnum} — the people they represent")
+                    dcol = st.columns([2, 1])
+                    with dcol[0]:
+                        st.components.v1.html(district_map_html(_dnum), height=340)
+                    with dcol[1]:
+                        for label, url in _city.district_links(_dnum).items():
+                            st.markdown(f"- [{label} ↗]({url})")
+                    _dpk = f"mp_distprof_{_dnum}"
+                    _mplm = _get_llm(smart=True)
+                    if _mplm.ready:
+                        if st.button("🏙️ Load district demographics & languages", key=f"mp_distbtn_{_dnum}"):
+                            with st.spinner("Researching the district (web-sourced)…"):
+                                st.session_state[_dpk] = _city.district_profile(_mplm, _dnum)
+                        if st.session_state.get(_dpk):
+                            st.markdown(f'<div class="brief">{_brief.md_to_html(st.session_state[_dpk])}</div>',
+                                        unsafe_allow_html=True)
+                            st.caption("Web-sourced snapshot — figures carry their source and may lag; verify.")
+
                 links_extra = []
                 if district:
                     links_extra.append(f"[Council district page ↗](https://council.nyc.gov/district-{district}/)")

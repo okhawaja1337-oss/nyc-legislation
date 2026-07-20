@@ -1550,8 +1550,8 @@ with sec_city:
     t_memberprofile, t_officials, t_council, t_distprofile, t_reps = st.tabs(
         ["🪪 Member Profile", "🏛️ City Officials", "🧑‍🤝‍🧑 Council Members", "📍 District Profile", "🏠 Find my reps"])
 with sec_politics:
-    t_warroom, t_statement, t_rapid, t_influence = st.tabs(
-        ["🎯 Issue War Room", "📝 Statement Studio", "⚡ Rapid Response", "🧭 Influence Map"])
+    t_warroom, t_predict, t_statement, t_rapid, t_influence = st.tabs(
+        ["🎯 Issue War Room", "🔮 Sign-on Predictor", "📝 Statement Studio", "⚡ Rapid Response", "🧭 Influence Map"])
 with sec_leg:
     t_list, t_detail, t_lawwiki, t_hear, t_changes, t_over = st.tabs(
         ["📋 Legislation list", "📄 Bill detail", "📖 Law Wiki", "📅 Hearings", "🔔 What changed", "📊 Overview"])
@@ -4352,3 +4352,65 @@ with t_lawwiki:
                     _mem().save_item("enforcement", r["File"], enf); st.success("Saved.")
                 st.caption("Implementation/enforcement is web-sourced — confirm against the cited agency reports, "
                            "oversight hearings, and NYC Open Data before relying on it.")
+
+
+# ============================================================================
+# 🔮 SIGN-ON PREDICTOR — who is likely to co-sponsor what (whip/drafting aid)
+# ============================================================================
+with t_predict:
+    st.subheader("🔮 Sign-on Predictor")
+    st.caption("Predict co-sponsorship: which bills a member is most (and least) likely to sign onto, and for a bill, "
+               "which members to work. Built from each member's topic focus and who they usually sign on with — a "
+               "whip/drafting aid, not a vote.")
+    if not (bundle and any(r.get("_sponsor_names") for r in rows)):
+        st.info("Load legislation **with sponsors** (⚙️ panel) so the predictor can learn each member's patterns.")
+    else:
+        mode = st.radio("Predict", ["By member — what they'll sign", "By bill — who'll sign it"],
+                        horizontal=True, key="pred_mode")
+        allm = list(member_names_c().keys())
+
+        if mode.startswith("By member"):
+            who = st.selectbox("Council Member", allm, key="pred_member")
+            topn = st.slider("How many each way", 5, 25, 12, key="pred_topn")
+            if who:
+                pred = _analysis.predict_signons(rows, who, top=topn)
+                st.caption(f"Learned from **{pred['record_size']}** of {who}'s bills · scoring "
+                           f"{pred['total_candidates']} bills they're not yet on.")
+                lc, uc = st.columns(2)
+                with lc:
+                    st.markdown("#### ✅ Most likely to sign on")
+                    st.dataframe(pd.DataFrame([{"Bill": x["File"], "Likelihood": x["score"],
+                        "Title": x["Title"][:60], "Why": (", ".join(x["why"]["matched_topics"]) +
+                        (" · with " + ", ".join(x["why"]["shared_sponsors"]) if x["why"]["shared_sponsors"] else ""))}
+                        for x in pred["likely"]]), hide_index=True, use_container_width=True, height=380)
+                with uc:
+                    st.markdown("#### ❌ Least likely to sign on")
+                    st.dataframe(pd.DataFrame([{"Bill": x["File"], "Likelihood": x["score"],
+                        "Title": x["Title"][:60], "Committee": x["Committee"]} for x in pred["unlikely"]]),
+                        hide_index=True, use_container_width=True, height=380)
+                st.info("💡 **Use it:** target the *most likely* for co-sponsor asks and coalition-building; for the "
+                        "*least likely*, an amendment addressing their focus (or a trusted partner as messenger) is "
+                        "what moves them.")
+                st.warning("⚠️ " + pred["caveat"])
+
+        else:
+            pick = st.selectbox("Bill", [r["File"] for r in rows], key="pred_bill")
+            r = next(x for x in rows if x["File"] == pick)
+            topn = st.slider("How many each way", 5, 25, 15, key="pred_billtopn")
+            st.caption(f"Current sponsors: {r.get('Sponsors (#)', len(r.get('_sponsor_names') or []))} · "
+                       f"prime: {r.get('Prime Sponsor','—')}. Scoring everyone not yet on it.")
+            sup = _analysis.predict_supporters(rows, r, top=topn)
+            lc, uc = st.columns(2)
+            with lc:
+                st.markdown("#### ✅ Most likely to sign on")
+                st.dataframe(pd.DataFrame([{"Member": x["member"], "Likelihood": x["score"],
+                    "Topic fit": x["why"]["topic_affinity"], "Coalition fit": x["why"]["coalition_affinity"]}
+                    for x in sup["likely"]]), hide_index=True, use_container_width=True, height=380)
+            with uc:
+                st.markdown("#### ❌ Least likely to sign on")
+                st.dataframe(pd.DataFrame([{"Member": x["member"], "Likelihood": x["score"]}
+                    for x in sup["unlikely"]]), hide_index=True, use_container_width=True, height=380)
+            st.info("💡 **Use it:** the *likely* column is your co-sponsor outreach list to build momentum; the "
+                    "*unlikely* column shows where you'd need to amend, trade, or expect opposition — useful when "
+                    "deciding whether to push, hold, or redraft.")
+            st.warning("⚠️ " + sup["caveat"])

@@ -19,6 +19,8 @@ Two sensitive things live here and are handled carefully:
 Both are framed as starting points for a human, grounded in public records.
 """
 
+from collections import Counter
+
 LEAN_CAVEAT = ("Estimated from public sponsorship activity only — NOT a floor "
                "vote, a prediction, or a statement of the member's position. "
                "Sponsorship shows interest/alignment, not how someone will vote.")
@@ -204,6 +206,83 @@ def blend_lean(sponsor_estimate, vote_counts):
     else:
         est["blended"] = est.get("lean")
     return est
+
+
+SIGNON_CAVEAT = ("Predicts CO-SPONSORSHIP propensity from historical patterns "
+                 "(topic focus + who a member usually signs on with) — not a floor "
+                 "vote, a stated position, or a commitment. A whip/drafting aid.")
+
+
+def member_topic_weights(rows, member):
+    """Normalized topic focus for a member (fraction of their bills per topic)."""
+    mine = _member_rows(rows, member)
+    c = Counter()
+    for r in mine:
+        for p in (r.get("Topic tags") or "").split("; "):
+            p = p.strip()
+            if p:
+                c[p] += 1
+    total = sum(c.values()) or 1
+    return {k: v / total for k, v in c.items()}, len(mine)
+
+
+def member_partners_w(rows, member):
+    """Normalized coalition weights — how often each colleague co-sponsors with them."""
+    last = _last(member)
+    c = Counter()
+    for r in _member_rows(rows, member):
+        for n in r.get("_sponsor_names", []) or []:
+            if n and last not in n.lower():
+                c[n] += 1
+    total = sum(c.values()) or 1
+    return {k: v / total for k, v in c.items()}
+
+
+def signon_score(row, topic_w, partner_w):
+    """0–100 propensity that a member (given their topic/partner weights) signs THIS bill."""
+    tags = [p.strip() for p in (row.get("Topic tags") or "").split("; ") if p.strip()]
+    t = min(sum(topic_w.get(x, 0.0) for x in tags), 1.0)               # topic affinity
+    p = min(sum(partner_w.get(n, 0.0) for n in (row.get("_sponsor_names") or [])), 1.0)  # coalition overlap
+    score = round(100 * (0.55 * t + 0.45 * p))
+    shared = [n for n in (row.get("_sponsor_names") or []) if partner_w.get(n, 0) > 0]
+    return score, {"topic_affinity": round(t, 2), "coalition_affinity": round(p, 2),
+                   "matched_topics": [x for x in tags if topic_w.get(x, 0) > 0],
+                   "shared_sponsors": shared[:5]}
+
+
+def predict_signons(rows, member, top=12):
+    """For a member: bills they're most / least likely to co-sponsor (excludes ones they're on)."""
+    tw, nbills = member_topic_weights(rows, member)
+    pw = member_partners_w(rows, member)
+    last = _last(member)
+    scored = []
+    for r in rows:
+        if any(last in (n or "").lower() for n in (r.get("_sponsor_names") or [])):
+            continue  # already a sponsor
+        s, why = signon_score(r, tw, pw)
+        scored.append({"File": r["File"], "Title": (r.get("Title") or "")[:90],
+                       "Status": r.get("Status", ""), "Committee": r.get("Committee/Body", ""),
+                       "Prime": r.get("Prime Sponsor", ""), "score": s, "why": why})
+    scored.sort(key=lambda x: -x["score"])
+    return {"member": member, "record_size": nbills, "total_candidates": len(scored),
+            "likely": [x for x in scored if x["score"] > 0][:top],
+            "unlikely": scored[::-1][:top], "caveat": SIGNON_CAVEAT}
+
+
+def predict_supporters(rows, bill_row, top=15):
+    """For a bill: members most / least likely to sign on (excludes current sponsors)."""
+    on = {(n or "").lower() for n in (bill_row.get("_sponsor_names") or [])}
+    results = []
+    for m in member_names(rows):
+        if any(_last(m) in n for n in on):
+            continue
+        tw, _n = member_topic_weights(rows, m)
+        pw = member_partners_w(rows, m)
+        s, why = signon_score(bill_row, tw, pw)
+        results.append({"member": m, "score": s, "why": why})
+    results.sort(key=lambda x: -x["score"])
+    return {"bill": bill_row.get("File", ""), "total": len(results),
+            "likely": results[:top], "unlikely": results[::-1][:top], "caveat": SIGNON_CAVEAT}
 
 
 def relevant_committee_members(committees, topic):

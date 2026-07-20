@@ -4371,11 +4371,35 @@ with t_predict:
 
         if mode.startswith("By member"):
             who = st.selectbox("Council Member", allm, key="pred_member")
-            topn = st.slider("How many each way", 5, 25, 12, key="pred_topn")
+            pcs = st.columns([1, 1])
+            topn = pcs[0].slider("How many each way", 5, 25, 12, key="pred_topn")
+            blend = pcs[1].checkbox("🗳️ Blend actual roll-call votes on similar bills (slower)", key="pred_blend")
             if who:
-                pred = _analysis.predict_signons(rows, who, top=topn)
+                vote_lean = None
+                if blend:
+                    with st.spinner("Reading how they actually voted on enacted bills…"):
+                        voted = [r for r in rows if any(w in (r.get("Status", "") or "").lower()
+                                 for w in ("enact", "adopt", "approv", "passed"))][:20]
+                        items = []
+                        for rr in voted:
+                            try:
+                                vs = _analysis.vote_signal(fetch_votes(rr["MatterId"]), who)
+                                if vs["total"] and vs["aye"] != vs["nay"]:
+                                    tags = [p.strip() for p in (rr.get("Topic tags") or "").split(";") if p.strip()]
+                                    items.append({"topics": tags, "aye": vs["aye"] > vs["nay"]})
+                            except Exception:
+                                pass
+                        vote_lean = _analysis.aggregate_vote_lean(items)
+                    if vote_lean:
+                        st.caption("✓ Blended their **actual votes** on similar bills for: "
+                                   + ", ".join(f"{t} ({int(v*100)}% aye)" for t, v in vote_lean.items()))
+                    else:
+                        st.caption("No roll-call votes found for this member on enacted bills in the loaded set — "
+                                   "using sponsorship patterns only.")
+                pred = _analysis.predict_signons(rows, who, top=topn, vote_lean=vote_lean)
                 st.caption(f"Learned from **{pred['record_size']}** of {who}'s bills · scoring "
-                           f"{pred['total_candidates']} bills they're not yet on.")
+                           f"{pred['total_candidates']} bills they're not yet on."
+                           + ("  🗳️ Predictions include how they actually voted." if pred.get("vote_blended") else ""))
                 lc, uc = st.columns(2)
                 with lc:
                     st.markdown("#### ✅ Most likely to sign on")

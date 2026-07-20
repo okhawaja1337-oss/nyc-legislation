@@ -238,19 +238,51 @@ def member_partners_w(rows, member):
     return {k: v / total for k, v in c.items()}
 
 
-def signon_score(row, topic_w, partner_w):
-    """0–100 propensity that a member (given their topic/partner weights) signs THIS bill."""
+def aggregate_vote_lean(items):
+    """Per-topic aye-rate (0..1) from a member's actual votes on similar bills.
+
+    items: [{"topics": [...], "aye": bool}]. Topics with no votes are omitted.
+    """
+    agg = {}
+    for it in items or []:
+        a = it.get("aye")
+        if a is None:
+            continue
+        for tp in it.get("topics", []) or []:
+            d = agg.setdefault(tp, {"aye": 0, "n": 0})
+            d["aye"] += 1 if a else 0
+            d["n"] += 1
+    return {tp: d["aye"] / d["n"] for tp, d in agg.items() if d["n"]}
+
+
+def signon_score(row, topic_w, partner_w, vote_lean=None):
+    """0–100 propensity that a member (given their topic/partner weights) signs THIS bill.
+
+    When `vote_lean` (per-topic aye-rate from real roll-calls) covers the bill's
+    topics, it's blended in — grounding the prediction in behavior, not just
+    sponsorship. Weights shift to 40% topic / 35% coalition / 25% votes; without
+    vote data it stays 55% topic / 45% coalition.
+    """
     tags = [p.strip() for p in (row.get("Topic tags") or "").split("; ") if p.strip()]
     t = min(sum(topic_w.get(x, 0.0) for x in tags), 1.0)               # topic affinity
     p = min(sum(partner_w.get(n, 0.0) for n in (row.get("_sponsor_names") or [])), 1.0)  # coalition overlap
-    score = round(100 * (0.55 * t + 0.45 * p))
+    v = None
+    if vote_lean:
+        vs = [vote_lean[x] for x in tags if x in vote_lean]
+        if vs:
+            v = sum(vs) / len(vs)                                       # aye-rate on similar bills
+    if v is not None:
+        score = round(100 * (0.40 * t + 0.35 * p + 0.25 * v))
+    else:
+        score = round(100 * (0.55 * t + 0.45 * p))
     shared = [n for n in (row.get("_sponsor_names") or []) if partner_w.get(n, 0) > 0]
     return score, {"topic_affinity": round(t, 2), "coalition_affinity": round(p, 2),
+                   "vote_lean": (round(v, 2) if v is not None else None),
                    "matched_topics": [x for x in tags if topic_w.get(x, 0) > 0],
                    "shared_sponsors": shared[:5]}
 
 
-def predict_signons(rows, member, top=12):
+def predict_signons(rows, member, top=12, vote_lean=None):
     """For a member: bills they're most / least likely to co-sponsor (excludes ones they're on)."""
     tw, nbills = member_topic_weights(rows, member)
     pw = member_partners_w(rows, member)
@@ -259,14 +291,15 @@ def predict_signons(rows, member, top=12):
     for r in rows:
         if any(last in (n or "").lower() for n in (r.get("_sponsor_names") or [])):
             continue  # already a sponsor
-        s, why = signon_score(r, tw, pw)
+        s, why = signon_score(r, tw, pw, vote_lean=vote_lean)
         scored.append({"File": r["File"], "Title": (r.get("Title") or "")[:90],
                        "Status": r.get("Status", ""), "Committee": r.get("Committee/Body", ""),
                        "Prime": r.get("Prime Sponsor", ""), "score": s, "why": why})
     scored.sort(key=lambda x: -x["score"])
     return {"member": member, "record_size": nbills, "total_candidates": len(scored),
             "likely": [x for x in scored if x["score"] > 0][:top],
-            "unlikely": scored[::-1][:top], "caveat": SIGNON_CAVEAT}
+            "unlikely": scored[::-1][:top], "caveat": SIGNON_CAVEAT,
+            "vote_blended": bool(vote_lean)}
 
 
 def predict_supporters(rows, bill_row, top=15):

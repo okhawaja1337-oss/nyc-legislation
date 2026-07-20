@@ -55,7 +55,7 @@ The primary hub — New York City government up front, with State & Federal in t
 ### 📣 Politics & Messaging
 The member's own communications & influence layer — **advocacy in their voice**, kept separate from the neutral-analysis tools.
 - **🎯 Issue War Room** — one topic in, a full kit out: a briefing + grounded figures + computed **swing members** + an influence memo + a draft statement, assembled in one pass and exportable together.
-- **🔮 Sign-on Predictor** — predicts co-sponsorship: which bills a member is most/least likely to sign, and for a bill, which members to whip — from each member's topic focus and coalition patterns, with the "why" and a labeled caveat (predicts co-sponsorship, not votes). Directly supports decisions to push, hold, redraft, or amend.
+- **🔮 Sign-on Predictor** — predicts co-sponsorship: which bills a member is most/least likely to sign, and for a bill, which members to whip — from each member's topic focus and coalition patterns, **optionally blended with how they actually voted** on similar roll-calls, with the "why" and a labeled caveat. Directly supports decisions to push, hold, redraft, or amend.
 - **📝 Statement Studio** — press statements, reporter quotes, floor remarks, newsletter blurbs, social posts, or talking points, in a measured/firm/urgent register, with a built-in style anchor.
 - **⚡ Rapid Response** — a grounded, on-message reply to a statement you supply (the tool never manufactures anyone's quote).
 - **🧭 Influence Map** — where a majority comes from on an issue across the progressive wing, moderates, and Republican minority, grounded in the co-sponsorship coalitions.

@@ -255,63 +255,132 @@ def aggregate_vote_lean(items):
     return {tp: d["aye"] / d["n"] for tp, d in agg.items() if d["n"]}
 
 
-def signon_score(row, topic_w, partner_w, vote_lean=None):
-    """0–100 propensity that a member (given their topic/partner weights) signs THIS bill.
+# 311 complaint types that stand in for each policy topic (constituent demand).
+TOPIC_311 = {
+    "housing": ["HEAT/HOT WATER", "PLUMBING", "PAINT/PLASTER", "UNSANITARY CONDITION",
+                "GENERAL", "DOOR/WINDOW", "WATER LEAK"],
+    "sanitation": ["Dirty Condition", "Sanitation Condition", "Missed Collection",
+                   "Overflowing Litter Baskets", "Electronics Waste"],
+    "transportation": ["Street Condition", "Illegal Parking", "Traffic Signal Condition",
+                       "Broken Muni Meter", "Street Light Condition", "Blocked Driveway"],
+    "environment": ["Air Quality", "Water System", "Water Quality"],
+    "parks": ["Maintenance or Facility", "Damaged Tree", "Overgrown Tree/Branches"],
+    "health": ["Rodent", "Food Establishment", "Unsanitary Animal Pvt Property", "Standing Water"],
+    "public safety": ["Noise - Residential", "Noise - Street/Sidewalk", "Blocked Driveway",
+                      "Drug Activity", "Graffiti"],
+    "consumer": ["Consumer Complaint"],
+}
 
-    When `vote_lean` (per-topic aye-rate from real roll-calls) covers the bill's
-    topics, it's blended in — grounding the prediction in behavior, not just
-    sponsorship. Weights shift to 40% topic / 35% coalition / 25% votes; without
-    vote data it stays 55% topic / 45% coalition.
+
+def demand_from_311(counts_by_type):
+    """Normalized per-topic constituent demand (0..1) from a {complaint_type: count} dict."""
+    if not counts_by_type:
+        return {}
+    raw = {topic: sum(counts_by_type.get(t, 0) for t in types)
+           for topic, types in TOPIC_311.items()}
+    mx = max(raw.values()) or 1
+    return {t: c / mx for t, c in raw.items() if c > 0}
+
+
+# Base weights for each signal; the composite renormalizes over whichever are present.
+_SIGNON_WEIGHTS = {"topic": 0.28, "coalition": 0.20, "votes": 0.20,
+                   "demand": 0.14, "stance": 0.12, "momentum": 0.06}
+
+
+def signon_score(row, topic_w, partner_w, vote_lean=None, demand=None,
+                 stance=None, momentum_max=None):
+    """0–100 propensity that a member signs THIS bill — a MULTI-FACTOR composite.
+
+    Combines whichever signals are available, each scored 0..1, then a weighted
+    average renormalized over the present factors (so it's never "just one thing"):
+      - topic     : sponsorship focus overlap
+      - coalition : overlap with who the member usually co-sponsors with
+      - votes     : aye-rate on similar roll-calls (behavior)         [if vote_lean]
+      - demand    : 311 constituent-demand on the bill's topics       [if demand]
+      - stance    : public-statement lean on the topic, -1..1 -> 0..1 [if stance]
+      - momentum  : how many have already signed (bandwagon)          [if momentum_max]
+    Returns (score, breakdown) where breakdown carries every factor used.
     """
     tags = [p.strip() for p in (row.get("Topic tags") or "").split("; ") if p.strip()]
-    t = min(sum(topic_w.get(x, 0.0) for x in tags), 1.0)               # topic affinity
-    p = min(sum(partner_w.get(n, 0.0) for n in (row.get("_sponsor_names") or [])), 1.0)  # coalition overlap
-    v = None
+    sponsors = row.get("_sponsor_names") or []
+    factors = {}
+    factors["topic"] = min(sum(topic_w.get(x, 0.0) for x in tags), 1.0)
+    factors["coalition"] = min(sum(partner_w.get(n, 0.0) for n in sponsors), 1.0)
     if vote_lean:
         vs = [vote_lean[x] for x in tags if x in vote_lean]
         if vs:
-            v = sum(vs) / len(vs)                                       # aye-rate on similar bills
-    if v is not None:
-        score = round(100 * (0.40 * t + 0.35 * p + 0.25 * v))
-    else:
-        score = round(100 * (0.55 * t + 0.45 * p))
-    shared = [n for n in (row.get("_sponsor_names") or []) if partner_w.get(n, 0) > 0]
-    return score, {"topic_affinity": round(t, 2), "coalition_affinity": round(p, 2),
-                   "vote_lean": (round(v, 2) if v is not None else None),
-                   "matched_topics": [x for x in tags if topic_w.get(x, 0) > 0],
-                   "shared_sponsors": shared[:5]}
+            factors["votes"] = sum(vs) / len(vs)
+    if demand:
+        ds = [demand[x] for x in tags if x in demand]
+        if ds:
+            factors["demand"] = sum(ds) / len(ds)
+    if stance:
+        ss = [stance[x] for x in tags if x in stance]
+        if ss:
+            factors["stance"] = max(0.0, min(1.0, (sum(ss) / len(ss) + 1) / 2))
+    if momentum_max:
+        try:
+            n = int(row.get("Sponsors (#)") or len(sponsors))
+        except (TypeError, ValueError):
+            n = len(sponsors)
+        factors["momentum"] = min(n / max(momentum_max, 1), 1.0)
+    wsum = sum(_SIGNON_WEIGHTS[k] for k in factors) or 1
+    comp = sum(v * _SIGNON_WEIGHTS[k] for k, v in factors.items()) / wsum
+    shared = [n for n in sponsors if partner_w.get(n, 0) > 0]
+    why = {k: round(v, 2) for k, v in factors.items()}
+    why.update({"matched_topics": [x for x in tags if topic_w.get(x, 0) > 0],
+                "shared_sponsors": shared[:5], "factors_used": list(factors.keys())})
+    return round(100 * comp), why
 
 
-def predict_signons(rows, member, top=12, vote_lean=None):
-    """For a member: bills they're most / least likely to co-sponsor (excludes ones they're on)."""
+def _momentum_max(rows):
+    best = 1
+    for r in rows:
+        try:
+            n = int(r.get("Sponsors (#)") or len(r.get("_sponsor_names") or []))
+        except (TypeError, ValueError):
+            n = len(r.get("_sponsor_names") or [])
+        best = max(best, n)
+    return best
+
+
+def predict_signons(rows, member, top=12, vote_lean=None, demand=None, stance=None):
+    """For a member: bills they're most / least likely to co-sponsor (excludes ones they're on).
+
+    Multi-factor: topic + coalition + optional votes/311-demand/statements + momentum.
+    """
     tw, nbills = member_topic_weights(rows, member)
     pw = member_partners_w(rows, member)
+    mmax = _momentum_max(rows)
     last = _last(member)
     scored = []
     for r in rows:
         if any(last in (n or "").lower() for n in (r.get("_sponsor_names") or [])):
             continue  # already a sponsor
-        s, why = signon_score(r, tw, pw, vote_lean=vote_lean)
+        s, why = signon_score(r, tw, pw, vote_lean=vote_lean, demand=demand,
+                              stance=stance, momentum_max=mmax)
         scored.append({"File": r["File"], "Title": (r.get("Title") or "")[:90],
                        "Status": r.get("Status", ""), "Committee": r.get("Committee/Body", ""),
                        "Prime": r.get("Prime Sponsor", ""), "score": s, "why": why})
     scored.sort(key=lambda x: -x["score"])
+    used = sorted({k for x in scored for k in x["why"].get("factors_used", [])})
     return {"member": member, "record_size": nbills, "total_candidates": len(scored),
             "likely": [x for x in scored if x["score"] > 0][:top],
             "unlikely": scored[::-1][:top], "caveat": SIGNON_CAVEAT,
-            "vote_blended": bool(vote_lean)}
+            "vote_blended": bool(vote_lean), "signals_used": used}
 
 
-def predict_supporters(rows, bill_row, top=15):
+def predict_supporters(rows, bill_row, top=15, demand=None):
     """For a bill: members most / least likely to sign on (excludes current sponsors)."""
     on = {(n or "").lower() for n in (bill_row.get("_sponsor_names") or [])}
+    mmax = _momentum_max(rows)
     results = []
     for m in member_names(rows):
         if any(_last(m) in n for n in on):
             continue
         tw, _n = member_topic_weights(rows, m)
         pw = member_partners_w(rows, m)
-        s, why = signon_score(bill_row, tw, pw)
+        s, why = signon_score(bill_row, tw, pw, demand=demand, momentum_max=mmax)
         results.append({"member": m, "score": s, "why": why})
     results.sort(key=lambda x: -x["score"])
     return {"bill": bill_row.get("File", ""), "total": len(results),

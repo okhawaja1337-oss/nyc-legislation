@@ -129,6 +129,35 @@ def discretionary_funding(member, token=None, dataset_url=None, sponsor_field=No
     return []
 
 
+# 311 Service Requests — constituent demand by complaint type.
+NYC311 = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
+
+
+def nyc311_by_type(since, borough=None, token=None, limit=250):
+    """311 complaint counts by type since a date (optionally one borough).
+
+    Returns {complaint_type: count}. Empty on failure. `since` is 'YYYY-MM-DD',
+    `borough` one of MANHATTAN/BRONX/BROOKLYN/QUEENS/STATEN ISLAND (case-insensitive).
+    """
+    where = f"created_date > '{since}T00:00:00'"
+    if borough:
+        where += f" and upper(borough)='{borough.strip().upper()}'"
+    params = {"$select": "complaint_type,count(1)", "$where": where,
+              "$group": "complaint_type", "$order": "count_1 DESC", "$limit": limit}
+    data = _get(NYC311, params, token=token)
+    out = {}
+    for row in data or []:
+        t = (row.get("complaint_type") or "").strip()
+        c = row.get("count_1") or row.get("count")
+        if not t or c is None:
+            continue
+        try:
+            out[t] = int(c)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def crime_snapshot(since, until, categories=None, dataset="historic", token=None):
     """Roll raw offense counts up into friendly categories, each with a citation.
 

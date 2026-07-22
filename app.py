@@ -4371,13 +4371,19 @@ with t_predict:
 
         if mode.startswith("By member"):
             who = st.selectbox("Council Member", allm, key="pred_member")
-            pcs = st.columns([1, 1])
-            topn = pcs[0].slider("How many each way", 5, 25, 12, key="pred_topn")
-            blend = pcs[1].checkbox("🗳️ Blend actual roll-call votes on similar bills (slower)", key="pred_blend")
+            topn = st.slider("How many each way", 5, 25, 12, key="pred_topn")
+            st.markdown("**Signals to blend in** (topic focus, coalition & momentum are always on):")
+            sg = st.columns(3)
+            blend = sg[0].checkbox("🗳️ Previous voting behavior", key="pred_blend",
+                                   help="Their actual roll-call votes on similar enacted bills (slower).")
+            use_demand = sg[1].checkbox("📞 District concerns (311)", key="pred_demand",
+                                        help="NYC 311 constituent-demand by topic in the last year.")
+            use_stance = sg[2].checkbox("🗣️ Public statements", key="pred_stance",
+                                        help="Web-sourced public stance by topic (needs Anthropic key).")
             if who:
-                vote_lean = None
+                vote_lean = None; demand = None; stance = None
                 if blend:
-                    with st.spinner("Reading how they actually voted on enacted bills…"):
+                    with st.spinner("Reading how they actually voted…"):
                         voted = [r for r in rows if any(w in (r.get("Status", "") or "").lower()
                                  for w in ("enact", "adopt", "approv", "passed"))][:20]
                         items = []
@@ -4389,32 +4395,45 @@ with t_predict:
                                     items.append({"topics": tags, "aye": vs["aye"] > vs["nay"]})
                             except Exception:
                                 pass
-                        vote_lean = _analysis.aggregate_vote_lean(items)
-                    if vote_lean:
-                        st.caption("✓ Blended their **actual votes** on similar bills for: "
-                                   + ", ".join(f"{t} ({int(v*100)}% aye)" for t, v in vote_lean.items()))
+                        vote_lean = _analysis.aggregate_vote_lean(items) or None
+                if use_demand and _od2:
+                    with st.spinner("Pulling 311 constituent demand…"):
+                        try:
+                            since = f"{_dt.date.today().year - 1}-01-01"
+                            demand = _analysis.demand_from_311(
+                                _od2.nyc311_by_type(since, token=(st.session_state.get("socrata_token") or None))) or None
+                        except Exception:
+                            demand = None
+                if use_stance:
+                    _sllm = _get_llm(smart=True)
+                    if _sllm.ready:
+                        _topics = sorted({p for r in rows for p in (r.get("Topic tags") or "").split("; ") if p})[:10]
+                        with st.spinner("Reading public statements (web)…"):
+                            stance = _profiles.topic_stances(_sllm, who, _topics) or None
                     else:
-                        st.caption("No roll-call votes found for this member on enacted bills in the loaded set — "
-                                   "using sponsorship patterns only.")
-                pred = _analysis.predict_signons(rows, who, top=topn, vote_lean=vote_lean)
+                        st.caption("Add your Anthropic key (⚙️ panel) to use the public-statements signal.")
+                pred = _analysis.predict_signons(rows, who, top=topn, vote_lean=vote_lean,
+                                                 demand=demand, stance=stance)
                 st.caption(f"Learned from **{pred['record_size']}** of {who}'s bills · scoring "
-                           f"{pred['total_candidates']} bills they're not yet on."
-                           + ("  🗳️ Predictions include how they actually voted." if pred.get("vote_blended") else ""))
+                           f"{pred['total_candidates']} bills · **signals used:** "
+                           + ", ".join(pred.get("signals_used", [])))
+                _facts = [f for f in ["topic", "coalition", "votes", "demand", "stance", "momentum"]
+                          if f in pred.get("signals_used", [])]
                 lc, uc = st.columns(2)
                 with lc:
                     st.markdown("#### ✅ Most likely to sign on")
                     st.dataframe(pd.DataFrame([{"Bill": x["File"], "Likelihood": x["score"],
-                        "Title": x["Title"][:60], "Why": (", ".join(x["why"]["matched_topics"]) +
-                        (" · with " + ", ".join(x["why"]["shared_sponsors"]) if x["why"]["shared_sponsors"] else ""))}
+                        "Title": x["Title"][:48], **{f: x["why"].get(f) for f in _facts}}
                         for x in pred["likely"]]), hide_index=True, use_container_width=True, height=380)
                 with uc:
                     st.markdown("#### ❌ Least likely to sign on")
                     st.dataframe(pd.DataFrame([{"Bill": x["File"], "Likelihood": x["score"],
-                        "Title": x["Title"][:60], "Committee": x["Committee"]} for x in pred["unlikely"]]),
-                        hide_index=True, use_container_width=True, height=380)
-                st.info("💡 **Use it:** target the *most likely* for co-sponsor asks and coalition-building; for the "
-                        "*least likely*, an amendment addressing their focus (or a trusted partner as messenger) is "
-                        "what moves them.")
+                        "Title": x["Title"][:48], **{f: x["why"].get(f) for f in _facts}}
+                        for x in pred["unlikely"]]), hide_index=True, use_container_width=True, height=380)
+                st.caption("Each column is a factor's 0–1 contribution — so you can see *why* a score is high or low, "
+                           "not just the number. The composite renormalizes across whichever signals you turned on.")
+                st.info("💡 **Use it:** target the *most likely* for co-sponsor asks; for the *least likely*, an "
+                        "amendment addressing their focus (or a trusted partner as messenger) is what moves them.")
                 st.warning("⚠️ " + pred["caveat"])
 
         else:

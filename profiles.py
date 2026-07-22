@@ -94,6 +94,35 @@ policy interests), "social" (object like {{"x":"handle","instagram":"...","websi
 "sources" (array of URLs used). Do not invent handles or facts."""
 
 
+STANCE_PROMPT = """Based on web search of this NYC Council Member's PUBLIC statements,
+press, and record, estimate their stance on each policy topic below. Return ONLY a
+JSON object mapping each topic to a number from -1 (publicly opposed) through 0
+(neutral / no clear public stance) to +1 (publicly supportive). Use 0 when you
+can't find a clear public position — do NOT guess from party. Topics: {topics}
+MEMBER: {name}"""
+
+
+def topic_stances(llm, name, topics, allow_web=True):
+    """Web-sourced per-topic public-statement lean (-1..1). {} if unavailable."""
+    if not (llm and llm.ready) or not topics:
+        return {}
+    import llm as _llmmod
+    try:
+        txt = llm.complete(STANCE_PROMPT.format(name=name, topics=", ".join(topics)),
+                           max_tokens=500, allow_web=allow_web)
+        data = _llmmod.extract_json(txt)
+        out = {}
+        if isinstance(data, dict):
+            for k, v in data.items():
+                try:
+                    out[str(k)] = max(-1.0, min(1.0, float(v)))
+                except (TypeError, ValueError):
+                    continue
+        return out
+    except Exception:
+        return {}
+
+
 def why_support(llm, name, stats, allow_web=True):
     if not (llm and llm.ready):
         return ""

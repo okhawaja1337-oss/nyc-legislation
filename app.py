@@ -1185,6 +1185,7 @@ import retrieval as _retrieval
 import lawwiki as _wiki
 import profiles as _profiles
 import council as _council
+import report as _report
 try:
     from sources import opendata as _od2
 except Exception:
@@ -1250,10 +1251,11 @@ def year_window(year):
 st.markdown("""
 <style>
 /* ===== Light, cohesive design system ===== */
-:root { --bg:#f5f7fb; --bg2:#eef2f9; --surf:#ffffff; --surf2:#f3f6fc; --line:#e2e8f2;
-        --ink:#1a2537; --mut:#5b6b86; --blue:#1d4ed8; --blue2:#2563eb; --cyan:#0891b2;
-        --teal:#0d9488; --green:#059669; --shadow:0 2px 10px rgba(24,45,90,.06);
-        --shadow2:0 6px 22px rgba(24,45,90,.10); }
+/* NYC-brand palette: official NYC blue (#003DA5) + flag orange (#FF6319). */
+:root { --bg:#f4f7fc; --bg2:#e9f0fa; --surf:#ffffff; --surf2:#eef4fc; --line:#d8e3f2;
+        --ink:#16233b; --mut:#51617e; --blue:#003DA5; --blue2:#0058D6; --cyan:#0058D6;
+        --orange:#FF6319; --teal:#0d9488; --green:#0a8a4f; --shadow:0 2px 10px rgba(0,61,165,.07);
+        --shadow2:0 6px 22px rgba(0,61,165,.12); }
 [data-testid="stSidebar"] { display:none !important; }
 [data-testid="stSidebarCollapsedControl"] { display:none !important; }
 .stApp { background:
@@ -1262,16 +1264,17 @@ st.markdown("""
   color: var(--ink); }
 .block-container { padding-top: 1.0rem; max-width: 1400px; }
 body, .stMarkdown, p, span, label, li { color: var(--ink); }
-.appbar { background: linear-gradient(115deg,#12275a 0%,#1e40af 55%,#2563eb 130%);
+.appbar { background: linear-gradient(115deg,#002a73 0%,#003DA5 55%,#0058D6 135%);
   color:#fff; border-radius:18px; padding:20px 26px; margin-bottom:16px;
-  border:1px solid #1b3a86; box-shadow:0 10px 30px rgba(29,78,216,.22); position:relative; overflow:hidden; }
+  border:1px solid #002a73; box-shadow:0 10px 30px rgba(0,61,165,.26); position:relative; overflow:hidden;
+  border-top:4px solid var(--orange); }
 .appbar:after { content:""; position:absolute; right:-30px; top:-70px; width:240px; height:240px;
-  background:radial-gradient(circle, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 70%); }
+  background:radial-gradient(circle, rgba(255,99,25,.28) 0%, rgba(255,99,25,0) 70%); }
 .appbar-title { font-size:1.55rem; font-weight:800; letter-spacing:.2px; color:#fff; }
-.appbar-sub { opacity:.92; font-size:.9rem; margin-top:4px; color:#dbe6ff; }
-.livepill { position:absolute; top:20px; right:24px; background:rgba(255,255,255,.16);
-  color:#eafff4; font-weight:700; font-size:.7rem; padding:4px 11px; border-radius:999px; letter-spacing:.6px;
-  border:1px solid rgba(255,255,255,.35); }
+.appbar-sub { opacity:.94; font-size:.9rem; margin-top:4px; color:#d7e4ff; }
+.livepill { position:absolute; top:20px; right:24px; background:var(--orange);
+  color:#fff; font-weight:800; font-size:.7rem; padding:4px 11px; border-radius:999px; letter-spacing:.6px;
+  border:1px solid rgba(255,255,255,.45); box-shadow:0 2px 8px rgba(255,99,25,.4); }
 div[data-testid="stMetric"] { background:var(--surf); border:1px solid var(--line); border-radius:14px;
   padding:14px 16px; box-shadow:var(--shadow); }
 div[data-testid="stMetricValue"] { color:var(--blue); font-weight:800; }
@@ -1279,11 +1282,11 @@ div[data-testid="stMetricLabel"] { color:var(--mut); font-weight:600; }
 .stTabs [data-baseweb="tab-list"] { gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
 .stTabs [data-baseweb="tab"] { background:var(--surf); border:1px solid var(--line); border-bottom:none;
   border-radius:11px 11px 0 0; padding:7px 14px; font-weight:600; color:var(--mut); }
-.stTabs [aria-selected="true"] { background:linear-gradient(180deg,#2563eb,#1d4ed8) !important; color:#fff !important;
+.stTabs [aria-selected="true"] { background:linear-gradient(180deg,#0058D6,#003DA5) !important; color:#fff !important;
   border-color:#1d4ed8; }
-.stButton>button { background:linear-gradient(180deg,#2563eb,#1d4ed8); color:#fff; border:1px solid #1d4ed8;
-  border-radius:10px; font-weight:700; padding:.5rem 1.1rem; box-shadow:0 3px 10px rgba(37,99,235,.22); }
-.stButton>button:hover { background:linear-gradient(180deg,#1d4ed8,#1e3a8a); color:#fff; }
+.stButton>button { background:linear-gradient(180deg,#0058D6,#003DA5); color:#fff; border:1px solid #003DA5;
+  border-radius:10px; font-weight:700; padding:.5rem 1.1rem; box-shadow:0 3px 10px rgba(0,61,165,.24); }
+.stButton>button:hover { background:linear-gradient(180deg,#003DA5,#002a73); color:#fff; }
 .stDownloadButton>button { background:linear-gradient(180deg,#0d9488,#0f766e); color:#fff; border:1px solid #0f766e;
   border-radius:10px; font-weight:700; }
 [data-testid="stExpander"] { border:1px solid var(--line); border-radius:14px; background:var(--surf);
@@ -1300,16 +1303,16 @@ hr { border-color:var(--line); }
 /* ---- component system ---- */
 .stTabs .stTabs [data-baseweb="tab"] { padding:5px 11px; font-size:.86rem; }
 .kicker { text-transform:uppercase; letter-spacing:.14em; font-size:.7rem; font-weight:800; color:var(--mut); }
-.hero { background:linear-gradient(120deg,#12275a 0%,#1e40af 60%,#2563eb 130%);
+.hero { background:linear-gradient(120deg,#002a73 0%,#003DA5 60%,#0058D6 130%);
   border-radius:18px; padding:22px 26px; margin-bottom:16px; position:relative; overflow:hidden;
-  box-shadow:0 10px 30px rgba(29,78,216,.22); }
+  box-shadow:0 10px 30px rgba(0,61,165,.26); border-top:4px solid var(--orange); }
 .hero h1 { font-size:1.7rem; font-weight:800; margin:0 0 4px; color:#fff; }
-.hero p { color:#dbe6ff; margin:0; }
+.hero p { color:#d7e4ff; margin:0; }
 .hero:after { content:""; position:absolute; right:-40px; top:-80px; width:280px; height:280px;
-  background:radial-gradient(circle, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 70%); }
+  background:radial-gradient(circle, rgba(255,99,25,.28) 0%, rgba(255,99,25,0) 70%); }
 .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:.72rem; font-weight:700;
   letter-spacing:.02em; border:1px solid transparent; }
-.b-nyc   { background:#e6effe; color:#1746b0; border-color:#c5dafb; }
+.b-nyc   { background:#e0ebfb; color:#003DA5; border-color:#b9d2f2; }
 .b-state { background:#f0e9fe; color:#6b34c9; border-color:#dbccfa; }
 .b-fed   { background:#fde9e9; color:#c02626; border-color:#f7cdcd; }
 .b-muted { background:var(--surf2); color:var(--mut); border-color:var(--line); }
@@ -1553,8 +1556,9 @@ with sec_politics:
     t_warroom, t_predict, t_statement, t_rapid, t_influence = st.tabs(
         ["🎯 Issue War Room", "🔮 Sign-on Predictor", "📝 Statement Studio", "⚡ Rapid Response", "🧭 Influence Map"])
 with sec_leg:
-    t_list, t_detail, t_lawwiki, t_hear, t_changes, t_over = st.tabs(
-        ["📋 Legislation list", "📄 Bill detail", "📖 Law Wiki", "📅 Hearings", "🔔 What changed", "📊 Overview"])
+    t_list, t_detail, t_lawwiki, t_hear, t_changes, t_over, t_data = st.tabs(
+        ["📋 Legislation list", "📄 Bill detail", "📖 Law Wiki", "📅 Hearings", "🔔 What changed",
+         "📊 Overview", "🗂️ Data Explorer"])
 with sec_levels:
     t_gov, t_votes, t_activity, t_dir, t_elect = st.tabs(
         ["🏙️ State & Federal bills", "🗳️ Votes & decisions", "🔔 Activity (all levels)",
@@ -1564,8 +1568,8 @@ with sec_people:
         ["👤 Members", "📖 CM Wiki", "📊 Policy Grid", "🪪 Deep profile", "📕 Dossier",
          "⚖️ Compare", "🤝 Coalitions", "🗺️ District map"])
 with sec_brief:
-    t_brief, t_packet, t_lab, t_memory = st.tabs(
-        ["📰 Briefing Studio", "📦 District Packet", "💡 Policy Lab", "🧠 Knowledge & Memory"])
+    t_brief, t_packet, t_lab, t_report, t_memory = st.tabs(
+        ["📰 Briefing Studio", "📦 District Packet", "💡 Policy Lab", "🧩 Report Builder", "🧠 Knowledge & Memory"])
 
 def need_data():
     st.info("Load data from the ⚙️ controls panel above first (this tab uses that data).")
@@ -4457,3 +4461,149 @@ with t_predict:
                     "*unlikely* column shows where you'd need to amend, trade, or expect opposition — useful when "
                     "deciding whether to push, hold, or redraft.")
             st.warning("⚠️ " + sup["caveat"])
+
+
+# ============================================================================
+# 🗂️ DATA EXPLORER — see ALL the data, filter, and extract it
+# ============================================================================
+def _flat_rows(rws):
+    """Every field, flattened (private _sponsor_names -> 'All sponsors'), for export."""
+    out = []
+    for r in rws:
+        d = {k: v for k, v in r.items() if not k.startswith("_")}
+        d["All sponsors"] = "; ".join(r.get("_sponsor_names", []) or [])
+        out.append(d)
+    return out
+
+
+with t_data:
+    st.subheader("🗂️ Data Explorer & Extract")
+    st.caption("The raw, complete dataset behind the app — every loaded bill and every field. Filter and sort right in "
+               "the grid, then extract exactly what you need (CSV, Excel, or JSON), or push a deep pull with full "
+               "sponsors and text.")
+    if not bundle:
+        need_data()
+    else:
+        flat = _flat_rows(rows)
+        allcols = sorted({k for d in flat for k in d.keys()})
+        q = st.text_input("Filter (number, word, member, committee…)", key="data_q")
+        f = [r for r in rows if matches_search(r, q)] if q.strip() else rows
+        flat_f = _flat_rows(f)
+        default_cols = [c for c in ["File", "Type", "Title", "Status", "Committee/Body", "Prime Sponsor",
+                                    "Sponsors (#)", "Topic tags", "Boroughs named", "All sponsors",
+                                    "Last Modified (UTC)", "Web Link"] if c in allcols]
+        cols = st.multiselect("Columns to show (all fields available)", allcols, default=default_cols, key="data_cols")
+        st.caption(f"**{len(f)}** of {len(rows)} bills · {len(allcols)} fields available.")
+        show = pd.DataFrame([{c: d.get(c) for c in (cols or default_cols)} for d in flat_f])
+        st.dataframe(show, use_container_width=True, height=460,
+                     column_config={"Web Link": st.column_config.LinkColumn("Open", display_text="Open")}
+                     if "Web Link" in (cols or default_cols) else None)
+
+        st.markdown("#### ⬇️ Extract")
+        full_df = pd.DataFrame(flat_f)
+        ec = st.columns(3)
+        ec[0].download_button("CSV (all fields)", full_df.to_csv(index=False).encode("utf-8"),
+                              "nyc_legislation_extract.csv", "text/csv", key="data_csv", use_container_width=True)
+        try:
+            from openpyxl import Workbook as _WBx
+            wb = _WBx(); ws = wb.active; ws.title = "Legislation"
+            hdrs = list(full_df.columns)
+            ws.append(hdrs)
+            for _, row_ in full_df.iterrows():
+                ws.append([("" if pd.isna(v) else v) for v in row_.tolist()])
+            wb.save("/tmp/data_extract.xlsx")
+            with open("/tmp/data_extract.xlsx", "rb") as fh:
+                ec[1].download_button("Excel (all fields)", fh.read(), "nyc_legislation_extract.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="data_xlsx", use_container_width=True)
+        except Exception:
+            ec[1].caption("Excel unavailable.")
+        ec[2].download_button("JSON (all fields)", json.dumps(flat_f, ensure_ascii=False, indent=2).encode("utf-8"),
+                              "nyc_legislation_extract.json", "application/json", key="data_json", use_container_width=True)
+
+        with st.expander("🔬 Deep extract — pull full sponsors & text for the filtered bills (capped, slower)"):
+            st.caption("Fetches each bill's complete sponsor list and full text from Legistar for a richer export.")
+            cap = st.number_input("How many of the filtered bills (max 40)", 1, 40, min(10, len(f)), key="data_deepcap")
+            if st.button("Run deep extract", key="data_deep"):
+                deep = []; prog = st.progress(0.0); sub = f[:int(cap)]
+                for i, rr in enumerate(sub):
+                    try:
+                        det = fetch_detail(rr["MatterId"])
+                        sps = current_sponsors({"MatterVersion": None}, det.get("sponsors", []))
+                        deep.append({"File": rr["File"], "Type": rr["Type"], "Title": rr["Title"],
+                                     "Status": rr["Status"], "Committee": rr.get("Committee/Body", ""),
+                                     "All sponsors": "; ".join(s.get("MatterSponsorName", "") for s in sps),
+                                     "Full text": (det.get("text", "") or "")[:20000], "Web Link": rr["Web Link"]})
+                    except Exception:
+                        pass
+                    prog.progress((i + 1) / len(sub))
+                st.session_state["data_deep"] = deep; st.success(f"Deep-extracted {len(deep)} bills.")
+            if st.session_state.get("data_deep"):
+                dd = st.session_state["data_deep"]
+                st.download_button("⬇️ Deep extract (JSON)", json.dumps(dd, ensure_ascii=False, indent=2).encode("utf-8"),
+                                   "deep_extract.json", "application/json", key="data_deep_json")
+                if st.button("🧩 Add this extract to Report Builder", key="data_to_report"):
+                    md = f"**{len(dd)} bills · filter: {q or 'all'}**\n\n" + "\n".join(
+                        f"- **{d['File']}** — {(d['Title'] or '')[:90]} · _{d['Status']}_" for d in dd)
+                    _mem().save_item("data-extract", f"Data extract — {q or 'all'} ({len(dd)} bills)", md)
+                    st.success("Added to the Knowledge base → available in 🧩 Report Builder.")
+
+
+# ============================================================================
+# 🧩 REPORT BUILDER — fuse everything you've found into one report
+# ============================================================================
+with t_report:
+    st.subheader("🧩 Report Builder")
+    st.caption("Fuse your findings into one document: pick from everything you've saved across the app — briefings, "
+               "law wikis, enforcement reports, data extracts, notes — order them, and export a single combined report.")
+    items = _mem().saved_items()
+    notes = _mem().all_notes()
+    if not items and not notes:
+        st.info("Nothing saved yet. Use **💾 Save to Knowledge base** on any briefing, law wiki, or enforcement "
+                "report — and **Add to Report Builder** on a data extract — then fuse them here.")
+    else:
+        title = st.text_input("Report title", "NYC Legislative Intelligence Report", key="rep_title")
+        intro = st.text_area("Intro / summary (optional)", key="rep_intro", height=80)
+        labels = {}
+        for it in items:
+            labels[f"[{it['kind']}] {it['title']} · {it['ts'][:10]} (#{it['id']})"] = ("item", it)
+        for n in notes:
+            labels[f"[note] {n['etype']}:{n['entity']} — {n['note'][:40]} (#n{n['id']})"] = ("note", n)
+        picked = st.multiselect("Include (in this order)", list(labels.keys()),
+                                default=list(labels.keys())[:min(6, len(labels))], key="rep_pick")
+        if st.button("🧩 Fuse into report", type="primary", key="rep_build"):
+            sections = []
+            for lab in picked:
+                kind, obj = labels[lab]
+                if kind == "item":
+                    sections.append({"heading": obj["title"], "kind": obj["kind"], "body": obj["body"]})
+                else:
+                    sections.append({"heading": f"Note — {obj['entity']}", "kind": obj["etype"],
+                                     "body": obj["note"]})
+            st.session_state["rep_out"] = _report.build_report(title, sections, intro=intro,
+                                                               as_of=str(_dt.date.today()))
+            st.session_state["rep_sections"] = sections
+        if st.session_state.get("rep_out"):
+            md = st.session_state["rep_out"]
+            st.markdown(f'<div class="brief">{_brief.md_to_html(md)}</div>', unsafe_allow_html=True)
+            rc = st.columns(3)
+            rc[0].download_button("⬇️ Markdown", md, "legislative_report.md", "text/markdown",
+                                  key="rep_md", use_container_width=True)
+            html = _brief.print_html(_brief.md_to_html(md), title=title)
+            rc[1].download_button("🖨️ Print / PDF (HTML)", html, "legislative_report.html", "text/html",
+                                  key="rep_html", use_container_width=True)
+            try:
+                from openpyxl import Workbook as _WBr
+                wb = _WBr(); ws = wb.active; ws.title = "Contents"
+                ws.append(["#", "Section", "Kind", "Chars"])
+                for row_ in _report.report_manifest_rows(st.session_state.get("rep_sections", [])):
+                    ws.append([row_["#"], row_["Section"], row_["Kind"], row_["Chars"]])
+                wb.save("/tmp/report_manifest.xlsx")
+                with open("/tmp/report_manifest.xlsx", "rb") as fh:
+                    rc[2].download_button("⬇️ Contents (Excel)", fh.read(), "report_contents.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="rep_xlsx", use_container_width=True)
+            except Exception:
+                rc[2].caption("Excel unavailable.")
+            if st.button("💾 Save this report to the Knowledge base", key="rep_save"):
+                _mem().save_item("report", title, md); st.success("Saved.")

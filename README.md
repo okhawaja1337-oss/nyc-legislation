@@ -63,6 +63,10 @@ The member's own communications & influence layer — **advocacy in their voice*
 
 > Integrity guardrails: never invents statistics or another official's words, tags unknown figures `[verify: source]`, criticizes record not persons, and hardcodes no caucus rosters. Drafts are decision-support — confirm any figure before release.
 
+### 🗂️ Data & reporting
+- **Data Explorer & Extract** (Legislation) — the raw, complete dataset: every loaded bill and **every field**, filter/sort in-grid, then extract exactly what you need as **CSV / Excel / JSON**, plus a **deep extract** that pulls full sponsors and bill text.
+- **🧩 Report Builder** (Briefings) — **fuse** your findings into one document: pick from everything you've saved across the app — briefings, law wikis, enforcement reports, data extracts, notes — order them, and export a single combined **Markdown / print-PDF / Excel** report.
+
 ### 🧠 Adaptive intelligence (it learns, and it's fast)
 The tool gets smarter and more tailored the more it's used — and answers instantly from a local index.
 - **Your focus** — the Command Center learns what you work on (members, topics, bills) and leads with it; **follow** any member.

@@ -1186,6 +1186,7 @@ import lawwiki as _wiki
 import profiles as _profiles
 import council as _council
 import report as _report
+import whip as _whip
 try:
     from sources import opendata as _od2
 except Exception:
@@ -1553,8 +1554,9 @@ with sec_city:
     t_memberprofile, t_officials, t_council, t_distprofile, t_reps = st.tabs(
         ["🪪 Member Profile", "🏛️ City Officials", "🧑‍🤝‍🧑 Council Members", "📍 District Profile", "🏠 Find my reps"])
 with sec_politics:
-    t_warroom, t_predict, t_statement, t_rapid, t_influence = st.tabs(
-        ["🎯 Issue War Room", "🔮 Sign-on Predictor", "📝 Statement Studio", "⚡ Rapid Response", "🧭 Influence Map"])
+    t_whip, t_warroom, t_predict, t_statement, t_rapid, t_influence = st.tabs(
+        ["🤝 Whip Room", "🎯 Issue War Room", "🔮 Sign-on Predictor", "📝 Statement Studio",
+         "⚡ Rapid Response", "🧭 Influence Map"])
 with sec_leg:
     t_list, t_detail, t_lawwiki, t_hear, t_changes, t_over, t_data = st.tabs(
         ["📋 Legislation list", "📄 Bill detail", "📖 Law Wiki", "📅 Hearings", "🔔 What changed",
@@ -4607,3 +4609,173 @@ with t_report:
                 rc[2].caption("Excel unavailable.")
             if st.button("💾 Save this report to the Knowledge base", key="rep_save"):
                 _mem().save_item("report", title, md); st.success("Saved.")
+
+
+# ============================================================================
+# 🤝 WHIP ROOM — the board, the math, the chances, and the LD message blast
+# ============================================================================
+with t_whip:
+    st.subheader("🤝 Whip Room")
+    st.caption("The whip operation for any bill: every office's Legislative Director from your roster, live "
+               "status tracking, what-we-have math against **26 (majority)** and **34 (veto-proof)**, predicted "
+               "positive/negative response chances, alliance leverage, and a one-click message blast.")
+
+    # --- roster (built-in from the office spreadsheet; replaceable in-app) ---
+    roster = st.session_state.get("_ld_roster")
+    if roster is None:
+        roster = _store.load("ld_roster", None) or _whip.load_contacts()
+        st.session_state["_ld_roster"] = roster
+    with st.expander("📇 Roster — imported from your staff spreadsheet (upload a CSV to replace/extend)"):
+        st.caption(f"{len(roster)} offices loaded. Columns matched loosely: district, CM, leg staffer/LD, email, "
+                   "budget, comms. Your other spreadsheet wasn't shareable with the connected account — export it "
+                   "as CSV and drop it here to fuse it in.")
+        up = st.file_uploader("Roster CSV", type=["csv"], key="whip_csv")
+        if up is not None and st.button("Replace roster with this CSV", key="whip_csv_go"):
+            parsed = _whip.parse_roster_csv(up.getvalue().decode("utf-8", "ignore"))
+            if parsed:
+                _store.save("ld_roster", parsed)
+                st.session_state["_ld_roster"] = parsed
+                st.success(f"Roster replaced — {len(parsed)} offices."); st.rerun()
+            else:
+                st.warning("Couldn't parse that CSV — need at least District/CM columns.")
+        if _store.load("ld_roster", None) and st.button("Restore built-in roster", key="whip_csv_reset"):
+            _store.save("ld_roster", None); st.session_state.pop("_ld_roster", None); st.rerun()
+
+    # --- bill + board -------------------------------------------------------
+    if bundle and rows:
+        wb_bill = st.selectbox("Bill being whipped", [r["File"] for r in rows], key="whip_bill")
+        wb_row = next(x for x in rows if x["File"] == wb_bill)
+    else:
+        wb_bill = st.text_input("Bill being whipped (load data for predictions)", "Int —", key="whip_bill_txt")
+        wb_row = None
+    _mem().log("whip", "bill", wb_bill)
+    wkey = f"whip_{wb_bill}"
+    saved = _store.load(wkey, {})
+    board = _whip.merge_statuses(roster, saved)
+
+    # sponsors of the bill are automatically "signed on" (unless overridden)
+    pred_scores = {}
+    allies = {}
+    if wb_row is not None:
+        _sp = {(n or "").split()[-1].lower() for n in (wb_row.get("_sponsor_names") or [])}
+        for c in board:
+            _cl = (c.get("cm") or "").split()[-1].lower()
+            if _cl in _sp and str(c["district"]) not in {str(k) for k in saved}:
+                c["status"] = "signed_on"
+        if any(r.get("_sponsor_names") for r in rows):
+            _sup = _analysis.predict_supporters(rows, wb_row, top=60)
+            for x in _sup["likely"] + _sup["unlikely"]:
+                pred_scores[(x["member"] or "").split()[-1].lower()] = x["score"]
+            _blocs = _memo("alliance_blocs", lambda: _analysis.alliance_blocs(rows))
+            allies = _analysis.allies_on_bill(rows, wb_row, _blocs)
+
+    chanced = _whip.response_chances(board, pred_scores)
+    t = _whip.tally(board)
+
+    # --- the math -----------------------------------------------------------
+    m = st.columns(5)
+    m[0].metric("✅ Have (signed + committed)", t["have"])
+    m[1].metric("🙂 With leaners", t["soft"])
+    m[2].metric("Need for majority (26)", t["need_majority"])
+    m[3].metric("Need for veto-proof (34)", t["need_veto"])
+    m[4].metric("📈 Expected yes (model)", _whip.expected_yes(chanced))
+    st.progress(min(1.0, t["have"] / t["majority"]),
+                text=f"{t['have']} / 26 majority  ·  {t['have']} / 34 veto-proof")
+    st.caption("Expected yes = sum of every office's positive-response chance — a labeled estimate from status + "
+               "the multi-factor sign-on model, not a guarantee.")
+
+    # --- the board (editable statuses persist per bill) ---------------------
+    st.markdown("#### 📋 The board")
+    _lab2key = {v: k for k, v in _whip.STATUS_LABELS.items()}
+    _ally_col = {}
+    for c in chanced:
+        a = allies.get(c.get("cm"), None) or next(
+            (v for k, v in allies.items() if (c.get("cm") or "").split()[-1].lower() in k.lower()), None)
+        _ally_col[c["district"]] = (f"{a['allies']} ({', '.join(a['ally_names'])})" if a and a.get("allies")
+                                    else ("" if a is None else "0"))
+    bdf = pd.DataFrame([{
+        "District": c["district"], "CM": c["cm"],
+        "Leg Director": (c.get("leg_staffer") or "").split(";")[0],
+        "Email": _whip.contact_email(c, "leg"),
+        "Status": _whip.STATUS_LABELS.get(c.get("status"), c.get("status")),
+        "＋% resp": c["positive_chance"], "−% resp": c["negative_chance"],
+        "Allies on bill": _ally_col.get(c["district"], ""),
+        "Note": c.get("note", ""),
+    } for c in chanced])
+    edited = st.data_editor(
+        bdf, hide_index=True, use_container_width=True, height=560, key="whip_editor",
+        disabled=["District", "CM", "Leg Director", "Email", "＋% resp", "−% resp", "Allies on bill"],
+        column_config={"Status": st.column_config.SelectboxColumn(
+            "Status", options=list(_whip.STATUS_LABELS.values()), required=True)})
+    if st.button("💾 Save board", type="primary", key="whip_save"):
+        new_saved = {}
+        for _i, r_ in edited.iterrows():
+            new_saved[str(r_["District"])] = {"status": _lab2key.get(r_["Status"], "not_contacted"),
+                                              "note": r_["Note"] or ""}
+        _store.save(wkey, new_saved)
+        st.success("Board saved — it persists for this bill."); st.rerun()
+
+    # --- alliances (political read) ----------------------------------------
+    with st.expander("🧭 Alliance map — who moves together (behavioral blocs + the real factions)"):
+        if bundle and rows and any(r.get("_sponsor_names") for r in rows):
+            _blocs2 = _memo("alliance_blocs", lambda: _analysis.alliance_blocs(rows))
+            if _blocs2["blocs"]:
+                st.dataframe(pd.DataFrame([{
+                    "Bloc": f"Bloc {i+1} (anchor: {b['anchor']})", "Size": b["size"],
+                    "Cohesion": b["cohesion"], "Members": ", ".join(b["members"])}
+                    for i, b in enumerate(_blocs2["blocs"])]), hide_index=True, use_container_width=True)
+                if _blocs2["independents"]:
+                    st.caption("Independents (no strong bloc): " + ", ".join(_blocs2["independents"][:15]))
+            st.caption(_blocs2["note"])
+        else:
+            st.caption("Load legislation with sponsors to compute behavioral alliance blocs.")
+        st.markdown("**The Council's political blocs (structure):**")
+        for f_ in _people.COUNCIL_FACTIONS[:4]:
+            st.markdown(f"- **{f_['name']}** — {f_['note']}")
+
+    # --- message blast ------------------------------------------------------
+    st.markdown("#### 📣 Message the Legislative Directors")
+    st.caption("Compose once, personalize per office, and open prefilled drafts — the app prepares everything; "
+               "**you** hit send from your own email.")
+    oc = st.columns([1, 2])
+    role = oc[0].selectbox("Send to", ["leg", "budget", "comms", "cm"],
+                           format_func={"leg": "Legislative Directors", "budget": "Budget staffers",
+                                        "comms": "Comms staffers", "cm": "Council Members"}.get, key="whip_role")
+    target_labels = oc[1].multiselect("Target offices with status",
+        list(_whip.STATUS_LABELS.values()),
+        default=[_whip.STATUS_LABELS[s] for s in ("not_contacted", "circle_back", "no_response", "undecided")],
+        key="whip_targets")
+    pitch = st.text_area("The pitch (dropped into the template — cite verified facts)", key="whip_pitch",
+                         placeholder="e.g. This bill does X; 1,234 related 311 complaints last year (NYC Open Data).")
+    template = st.text_area("Message template ({staffer}, {cm}, {bill}, {title}, {pitch}, {district})",
+                            _whip.DEFAULT_TEMPLATE, height=200, key="whip_tpl")
+    targets = [c for c in chanced if _whip.STATUS_LABELS.get(c.get("status")) in target_labels]
+    orows = _whip.outreach_rows(targets, template, bill=wb_bill,
+                                title=(wb_row.get("Title") or "")[:100] if wb_row is not None else "",
+                                pitch=pitch, role=role)
+    st.caption(f"🎯 **{len(orows)}** offices targeted (of {len(board)}; offices without a {role} email are skipped).")
+    if orows:
+        bc = st.columns(3)
+        bc[0].link_button(f"📨 Open bulk draft (BCC {len(orows)})",
+                          _whip.bulk_mailto([r["email"] for r in orows],
+                                            f"Co-sponsorship request: {wb_bill}",
+                                            _whip.render_message(template, {"cm": "[Member]", "leg_staffer": "there"},
+                                                                 bill=wb_bill, pitch=pitch)),
+                          use_container_width=True)
+        bc[1].download_button("⬇️ Outreach list (CSV)",
+                              pd.DataFrame(orows).drop(columns=["mailto"]).to_csv(index=False).encode("utf-8"),
+                              f"whip_outreach_{wb_bill.replace(' ', '_')}.csv", "text/csv",
+                              key="whip_csv_dl", use_container_width=True)
+        if bc[2].button("💾 Save blast to Knowledge base", key="whip_kb", use_container_width=True):
+            _mem().save_item("whip-blast", f"Whip blast — {wb_bill} ({len(orows)} offices)",
+                             f"**Targets:** {', '.join(str(r['cm']) for r in orows)}\n\n---\n\n" + orows[0]["message"])
+            st.success("Saved.")
+        with st.expander("✉️ Per-office personalized drafts (click to open each)"):
+            st.dataframe(pd.DataFrame([{"District": r["district"], "CM": r["cm"], "To": r["recipient"],
+                                        "Email": r["email"], "Status": _whip.STATUS_LABELS.get(r["status"], r["status"]),
+                                        "Open draft": r["mailto"]} for r in orows]),
+                         hide_index=True, use_container_width=True, height=420,
+                         column_config={"Open draft": st.column_config.LinkColumn("Open draft",
+                                                                                  display_text="✉️ open")})
+    st.warning("⚠️ Chances are labeled estimates (whip status + sign-on model). Outreach is prepared as drafts — "
+               "a human always sends. Keep the pitch to verified facts.")

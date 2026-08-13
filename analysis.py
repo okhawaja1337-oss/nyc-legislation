@@ -387,7 +387,86 @@ def predict_supporters(rows, bill_row, top=15, demand=None):
             "likely": results[:top], "unlikely": results[::-1][:top], "caveat": SIGNON_CAVEAT}
 
 
-def relevant_committee_members(committees, topic):
+ALLIANCE_NOTE = ("Alliance blocs are computed from who actually co-sponsors together in the "
+                 "loaded data — a behavioral read on political alliances, not caucus rosters. "
+                 "Interpret alongside the Council's real factions (progressives, moderates, "
+                 "Republicans) and verify before acting.")
+
+
+def _sponsor_sets(rows):
+    """member -> set of bill files they sponsor."""
+    sets = {}
+    for r in rows:
+        for n in r.get("_sponsor_names", []) or []:
+            if n:
+                sets.setdefault(n, set()).add(r.get("File"))
+    return sets
+
+
+def alliance_blocs(rows, threshold=0.25, min_bloc=2):
+    """Cluster members into voting/sponsoring alliance blocs.
+
+    Greedy agglomeration on Jaccard similarity of sponsorship sets: seed with the
+    most active unassigned member, pull in everyone whose average similarity to
+    the bloc clears `threshold`. Returns blocs (largest first) with a cohesion
+    score, plus the leftover independents. Transparent and deterministic.
+    """
+    sets = _sponsor_sets(rows)
+    members = sorted(sets, key=lambda m: -len(sets[m]))
+
+    def sim(a, b):
+        u = sets[a] | sets[b]
+        return (len(sets[a] & sets[b]) / len(u)) if u else 0.0
+
+    unassigned = list(members)
+    blocs = []
+    while unassigned:
+        seed = unassigned.pop(0)
+        bloc = [seed]
+        changed = True
+        while changed:
+            changed = False
+            for m in list(unassigned):
+                avg = sum(sim(m, b) for b in bloc) / len(bloc)
+                if avg >= threshold:
+                    bloc.append(m)
+                    unassigned.remove(m)
+                    changed = True
+        if len(bloc) >= min_bloc:
+            pairs = [(a, b) for i, a in enumerate(bloc) for b in bloc[i + 1:]]
+            cohesion = round(sum(sim(a, b) for a, b in pairs) / len(pairs), 3) if pairs else 0.0
+            blocs.append({"members": bloc, "size": len(bloc), "cohesion": cohesion,
+                          "anchor": bloc[0]})
+    blocs.sort(key=lambda b: -b["size"])
+    in_blocs = {m for b in blocs for m in b["members"]}
+    return {"blocs": blocs, "independents": [m for m in members if m not in in_blocs],
+            "note": ALLIANCE_NOTE}
+
+
+def bloc_of(blocs_result, member):
+    last = _last(member)
+    for i, b in enumerate(blocs_result.get("blocs", [])):
+        if any(last in (m or "").lower() for m in b["members"]):
+            return i, b
+    return None, None
+
+
+def allies_on_bill(rows, bill_row, blocs_result):
+    """For each member NOT yet on a bill: how many of their alliance-bloc mates
+    already sponsor it. The classic whip lever — the ask travels through allies."""
+    sponsors = {(n or "").lower() for n in (bill_row.get("_sponsor_names") or [])}
+    out = {}
+    for m in member_names(rows):
+        if any(_last(m) in s for s in sponsors):
+            continue
+        _i, b = bloc_of(blocs_result, m)
+        if not b:
+            out[m] = {"allies": 0, "ally_names": []}
+            continue
+        mates = [x for x in b["members"] if _last(x) != _last(m)]
+        on = [x for x in mates if any(_last(x) in s for s in sponsors)]
+        out[m] = {"allies": len(on), "ally_names": on[:4]}
+    return out
     """Members of committees whose name relates to the topic (from get_committees())."""
     t = (topic or "").lower()
     words = [w for w in t.replace("/", " ").split() if len(w) > 2]

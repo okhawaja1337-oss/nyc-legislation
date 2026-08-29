@@ -4712,8 +4712,49 @@ with t_whip:
         for _i, r_ in edited.iterrows():
             new_saved[str(r_["District"])] = {"status": _lab2key.get(r_["Status"], "not_contacted"),
                                               "note": r_["Note"] or ""}
+        # movement history: log every change with the chance the model gave at that moment
+        _changes = _whip.diff_boards(saved, new_saved)
+        if _changes:
+            _hkey = f"whip_hist_{wb_bill}"
+            _hist = _store.load(_hkey, [])
+            _hist += _whip.history_entries(
+                _changes,
+                {str(c["district"]): c["positive_chance"] for c in chanced},
+                {str(c["district"]): c.get("cm", "") for c in chanced},
+                _dt.datetime.now().isoformat(timespec="minutes"))
+            _store.save(_hkey, _hist)
         _store.save(wkey, new_saved)
         st.success("Board saved — it persists for this bill."); st.rerun()
+
+    # --- movement & calibration (the whip system learns from real outcomes) ---
+    _hist = _store.load(f"whip_hist_{wb_bill}", [])
+    with st.expander(f"📈 Movement & model calibration ({len(_hist)} status changes logged)"):
+        if not _hist:
+            st.caption("Every board save logs who moved, when, which way, and what chance the model gave them at "
+                       "that moment. As offices resolve (sign on or oppose), a calibration readout appears here — "
+                       "so you can see how trustworthy the predictions are on THIS bill.")
+        else:
+            st.dataframe(pd.DataFrame([{
+                "When": h["ts"], "District": h["district"], "CM": h["cm"],
+                "From": _whip.STATUS_LABELS.get(h["from"], h["from"]),
+                "To": _whip.STATUS_LABELS.get(h["to"], h["to"]),
+                "Model chance at move": h.get("predicted_chance")} for h in reversed(_hist)]),
+                hide_index=True, use_container_width=True, height=min(360, 60 + 32 * len(_hist)))
+            cal = _whip.calibration(_hist)
+            if cal.get("resolved"):
+                cc_ = st.columns(4)
+                cc_[0].metric("Resolved offices", cal["resolved"])
+                cc_[1].metric("Avg chance — eventual signers",
+                              f"{cal['avg_chance_signers']}%" if cal.get("avg_chance_signers") is not None else "—")
+                cc_[2].metric("Avg chance — eventual opponents",
+                              f"{cal['avg_chance_opponents']}%" if cal.get("avg_chance_opponents") is not None else "—")
+                cc_[3].metric("Model accuracy (≥50% = yes)", f"{cal['accuracy']}%")
+                st.caption("A transparent learning readout — if signers averaged high chances and opponents low, "
+                           "the model is well-calibrated for this fight; if not, weight your own read more heavily. "
+                           "Nothing is silently re-weighted.")
+            else:
+                st.caption("No offices have resolved (signed/committed or opposed/leaning-no) yet — calibration "
+                           "appears once they do.")
 
     # --- alliances (political read) ----------------------------------------
     with st.expander("🧭 Alliance map — who moves together (behavioral blocs + the real factions)"):

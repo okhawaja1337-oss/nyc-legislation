@@ -150,6 +150,60 @@ def expected_yes(chanced):
 
 
 # ---------------------------------------------------------------------------
+# Movement history & calibration — the whip system learns from real outcomes.
+# ---------------------------------------------------------------------------
+POSITIVE = {"signed_on", "committed"}
+NEGATIVE = {"opposed", "leaning_no"}
+
+
+def diff_boards(old_saved, new_saved):
+    """Status changes between two saved boards: [{district, from, to}]."""
+    old_saved, new_saved = old_saved or {}, new_saved or {}
+    out = []
+    for d, nv in new_saved.items():
+        ov = old_saved.get(d) or {}
+        prev = ov.get("status") or "not_contacted"
+        if (nv or {}).get("status") and nv.get("status") != prev:
+            out.append({"district": d, "from": prev, "to": nv["status"]})
+    return out
+
+
+def history_entries(changes, chance_by_district, cm_by_district, ts):
+    """Turn a board diff into timestamped history rows, capturing what the model
+    predicted for each office at the moment it moved."""
+    rows = []
+    for ch in changes:
+        d = str(ch["district"])
+        rows.append({"ts": ts, "district": d, "cm": cm_by_district.get(d, ""),
+                     "from": ch["from"], "to": ch["to"],
+                     "predicted_chance": chance_by_district.get(d)})
+    return rows
+
+
+def calibration(history):
+    """How the model's chances compare with what actually happened.
+
+    Looks at every move that RESOLVED an office (into POSITIVE or NEGATIVE) and
+    reports the average predicted chance for each side plus a simple accuracy:
+    calling chance>=50 a predicted yes. Transparent — a learning readout, not a
+    silent re-weighting.
+    """
+    pos = [h for h in history or [] if h.get("to") in POSITIVE and h.get("predicted_chance") is not None]
+    neg = [h for h in history or [] if h.get("to") in NEGATIVE and h.get("predicted_chance") is not None]
+    resolved = pos + neg
+    if not resolved:
+        return {"resolved": 0}
+    hits = sum(1 for h in pos if h["predicted_chance"] >= 50) + \
+           sum(1 for h in neg if h["predicted_chance"] < 50)
+    return {
+        "resolved": len(resolved), "signed": len(pos), "opposed": len(neg),
+        "avg_chance_signers": round(sum(h["predicted_chance"] for h in pos) / len(pos)) if pos else None,
+        "avg_chance_opponents": round(sum(h["predicted_chance"] for h in neg) / len(neg)) if neg else None,
+        "accuracy": round(100 * hits / len(resolved)),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Outreach — prefilled drafts; a human sends them.
 # ---------------------------------------------------------------------------
 DEFAULT_TEMPLATE = """Hi {staffer},

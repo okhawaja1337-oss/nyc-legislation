@@ -58,6 +58,13 @@ def cmd_load(a, store: Store) -> None:
     if a.si_rollup:
         from .ingest.sheets import ingest_si_rollup, load_connector_json
         out["si_rollup"] = ingest_si_rollup(store, load_connector_json(a.si_rollup))
+    if a.channel_rollup:
+        from .ingest.sheets import ingest_channel_rollup, load_connector_json
+        out["channel_rollup"] = ingest_channel_rollup(
+            store, load_connector_json(a.channel_rollup))
+    if a.tr_ledger:
+        from .ingest.sheets import ingest_tr_ledger, load_connector_json
+        out["tr_ledger"] = ingest_tr_ledger(store, load_connector_json(a.tr_ledger))
     if a.calendar:
         from .ingest.calendar import ingest_connector_file
         out["calendar"] = ingest_connector_file(store, a.calendar)
@@ -66,7 +73,7 @@ def cmd_load(a, store: Store) -> None:
         out["greenbook"] = ing_gb(store)
     if not out:
         print("nothing to load — pass --council-record / --fiscal / --mocs / "
-              "--si-rollup / --calendar / --greenbook")
+              "--si-rollup / --channel-rollup / --tr-ledger / --calendar / --greenbook")
         return
     _p(out, raw=True)
 
@@ -221,6 +228,8 @@ def build_parser() -> argparse.ArgumentParser:
     lo = sub.add_parser("load", help="ingest sources into the lake")
     lo.add_argument("--council-record"); lo.add_argument("--fiscal")
     lo.add_argument("--mocs"); lo.add_argument("--si-rollup")
+    lo.add_argument("--channel-rollup", help="SI funding by channel and pot")
+    lo.add_argument("--tr-ledger", help="line-by-line Transparency Reso ledger")
     lo.add_argument("--calendar"); lo.add_argument("--greenbook", action="store_true")
     lo.set_defaults(fn=cmd_load)
 

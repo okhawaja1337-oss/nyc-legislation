@@ -286,12 +286,19 @@ def fiscal_brief(store: Store, fy: int = 2027, with_council: bool = False) -> Br
         f"Pipeline: {_fmt(pipe['pending_total'], 'usd')} pending "
         f"({_fmt(pipe['pending_share_pct'], 'pct')} of tracked), "
         f"{len(pipe['defunded'])} defunded or withdrawn lines on record.",
-        f"Staten Island FY{fy} ledger: {_fmt(rec['stated']['adopted'], 'usd')} "
-        f"across {_fmt(rec['stated']['lines'])} lines, with "
-        f"{_fmt(rec['stated']['tr_movement'], 'usd')} moved by Transparency "
-        f"Resolution. Loaded detail covers "
-        f"{_fmt(rec['detail_coverage']['lines_pct'], 'pct')} of those lines — "
-        f"{rec['reading']}",
+        f"Staten Island FY{fy}, as two separate measures that are never merged: "
+        f"capital {_fmt(rec['capital']['adopted'], 'usd')} over "
+        f"{_fmt(rec['capital']['lines'])} lines, expense "
+        f"{_fmt(rec['expense']['adopted'], 'usd')} over "
+        f"{_fmt(rec['expense']['lines'])} lines.",
+        f"Transparency Resolution movement: the headline net is "
+        f"{_fmt(rec['tr_movement']['stated_net'], 'usd')}, but only "
+        f"{_fmt(rec['tr_movement']['confirmed'], 'usd')} is confirmed money. "
+        f"{_fmt(rec['tr_movement']['pending_mod'], 'usd')} sits in "
+        f"pending-modification lines that do not take effect until a budget "
+        f"modification passes, and "
+        f"{_fmt(rec['tr_movement']['reversed_and_excluded'], 'usd')} was "
+        f"designated and then rescinded.",
     ]
     hl = (cw.get("forecast") or {}).get("highlights") or []
     b.details += [f"Revenue outlook: {h}" for h in hl[:2]]
@@ -304,8 +311,9 @@ def fiscal_brief(store: Store, fy: int = 2027, with_council: bool = False) -> Br
         "Island comparison: " + ", ".join(
             f"D{t['district']} ${t['per_resident']} (rank {t['rank']})"
             for t in eq.get("staten_island", [])),
-        f"Borough-wide, the FY{fy} Staten Island position is "
-        f"{_fmt(rec['stated']['adopted'], 'usd')} including capital §254.",
+        f"Borough-wide capital §254 is {_fmt(rec['capital']['adopted'], 'usd')}; "
+        f"borough-wide expense is {_fmt(rec['expense']['adopted'], 'usd')}. "
+        "Cite them separately — they are different measures.",
     ]
     b.questions = [
         f"Citywide initiative dollars grew {_fmt(g['citywide_pct'], 'pct')} while "
@@ -313,25 +321,29 @@ def fiscal_brief(store: Store, fy: int = 2027, with_council: bool = False) -> Br
         f"the citywide pots is actually reaching District {DISTRICT} organizations?",
         f"{_fmt(pipe['pending_total'], 'usd')} is unreleased in the pipeline — which "
         "of those grantees cannot absorb a late clearance, and who is calling them?",
-        f"Our ledger detail covers only "
-        f"{_fmt(rec['detail_coverage']['lines_pct'], 'pct')} of the Island's lines — "
-        "do we reconcile to 100% before the Preliminary Budget Response, or accept "
-        "the gap and cite the rollup only?",
+        f"The press line is {_fmt(rec['tr_movement']['stated_net'], 'usd')} but "
+        f"confirmed money is {_fmt(rec['tr_movement']['confirmed'], 'usd')} — "
+        "do we say the confirmed number and hold the pending line back until "
+        "the modification passes?",
     ]
     b.talking_points = [
-        f"Staten Island's FY{fy} position is {_fmt(rec['stated']['adopted'], 'usd')} "
-        f"across {_fmt(rec['stated']['lines'])} funding lines — the Island is not a "
+        f"Staten Island's FY{fy} capital position is "
+        f"{_fmt(rec['capital']['adopted'], 'usd')} and its expense position is "
+        f"{_fmt(rec['expense']['adopted'], 'usd')} — the Island is not a "
         "rounding error in this budget.",
         f"District {DISTRICT} sustains "
         f"{ev['churn']['counts']['sustained']} organizations year over year; that "
         "continuity is what turns an annual grant into a standing service.",
     ]
     b.recommendation = (
-        f"Close the reconciliation gap before the next Transparency Resolution: the "
-        f"rollup totals are authoritative and foot, but line-level detail covers "
-        f"{_fmt(rec['detail_coverage']['lines_pct'], 'pct')}. Until it is complete, "
-        f"cite the rollup total ({_fmt(rec['stated']['adopted'], 'usd')}), never a "
-        f"line count.")
+        f"Use {_fmt(rec['tr_movement']['confirmed'], 'usd')} as the Transparency "
+        f"Resolution figure in any public statement, not the "
+        f"{_fmt(rec['tr_movement']['stated_net'], 'usd')} headline. The difference "
+        f"is a {_fmt(rec['tr_movement']['pending_mod'], 'usd')} line awaiting a "
+        f"budget modification and a "
+        f"{_fmt(rec['tr_movement']['reversed_and_excluded'], 'usd')} designation "
+        f"that was reversed four weeks later. Capital and expense stay separate "
+        f"in every citation.")
 
     if with_council:
         b.council = deliberate(

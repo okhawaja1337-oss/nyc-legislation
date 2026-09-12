@@ -361,3 +361,173 @@ def load_connector_json(path: Path | str) -> str:
     """Read a Drive-connector result file ({'fileContent': '...'})."""
     raw = json.loads(Path(path).read_text())
     return raw.get("fileContent", "") if isinstance(raw, dict) else str(raw)
+
+
+# ------------------------------------------- the Transparency Reso ledger ----
+# The office's own tier vocabulary. These are not decorative: a
+# ADOPTED-PENDING-MOD line does not take effect until a budget modification
+# passes, so it must never be mixed into a confirmed total, and a line
+# REVERSED by a later resolution nets to zero.
+TIERS = ("ADOPTED-IMPLEMENTATION", "ADOPTED-PENDING-MOD", "REVERSED", "CONTEXT")
+CONFIRMED_TIER = "ADOPTED-IMPLEMENTATION"
+
+
+def _tier_of(raw: str) -> str:
+    up = (raw or "").upper()
+    if "PENDING-MOD" in up or "PENDING MOD" in up:
+        return "ADOPTED-PENDING-MOD"
+    if "REVERSED" in up:
+        return "REVERSED"
+    if "CONTEXT" in up:
+        return "CONTEXT"
+    if "IMPLEMENTATION" in up:
+        return "ADOPTED-IMPLEMENTATION"
+    return up or "UNSPECIFIED"
+
+
+def ingest_tr_ledger(store: Store, text: str, fy: int = 2027,
+                     source_id: str = "SI_TR_LEDGER") -> dict:
+    """Load the line-by-line Transparency Resolution ledger.
+
+    Every Staten Island line moved by a Transparency Resolution, with the
+    provenance tier that decides whether it counts. The ledger's own reading
+    is the analytically important part and is preserved as metadata: the
+    Speaker block nets to zero only because a *pending* line offsets confirmed
+    rescissions, so the confirmed Speaker channel is down even though the
+    arithmetic looks flat.
+    """
+    rows = list(rows_from_markdown(text))
+    try:
+        hdr_i, idx = find_header(rows, "reso", "initiative", "organization",
+                                 "amount")
+    except ValueError:
+        return {"tr_ledger_rows": 0, "error": "header not found"}
+
+    with store.tx() as c:
+        c.execute("DELETE FROM funding WHERE source_id = ? AND fy = ?",
+                  (source_id, fy))
+
+    out: list[dict] = []
+    total_row: dict | None = None
+    for ordinal, cells in enumerate(rows[hdr_i + 1:]):
+        reso = col(cells, idx, "reso")
+        if not reso:
+            continue
+        if reso.upper().startswith("TOTAL"):
+            total_row = {"net": money(col(cells, idx, "amount")),
+                         "label": col(cells, idx, "initiative")}
+            continue
+
+        org = col(cells, idx, "organization")
+        if not org:
+            continue
+        amt = money(col(cells, idx, "amount"))
+        if amt is None:
+            continue
+        ein = clean_ein(col(cells, idx, "ein"))
+        tier = _tier_of(col(cells, idx, "tier"))
+        d49 = col(cells, idx, "d49 status").upper()
+        initiative = col(cells, idx, "initiative")
+        body = col(cells, idx, "member/body", "member")
+        out.append({
+            "line_id": _lid("TRL", fy, reso, ordinal, org, amt, initiative),
+            "fy": fy,
+            "channel": "expense",
+            "pot": initiative or None,
+            "member": body or None,
+            "person_id": None,
+            "district": 49 if d49.startswith("IN D49") else None,
+            "borough": "Staten Island",
+            "org": org,
+            "org_key": org_key(org, ein),
+            "ein": ein,
+            "program": org.split(" — ")[1] if " — " in org else None,
+            "agency": col(cells, idx, "agy", "agency") or None,
+            "amount": amt,
+            "section": f"Transparency Reso {reso}",
+            "purpose": col(cells, idx, "note / effect", "note") or None,
+            "status": "TR-add" if amt > 0 else "TR-cut" if amt < 0 else "TR-neutral",
+            "tier": tier,
+            "reso": reso,
+            "mocs_id": None,
+            "analyst": None,
+            "in_d49": 1 if d49.startswith("IN D49") or d49.startswith("TO D49") else 0,
+            "pillar": pillar_for(org, initiative),
+            "source_id": source_id,
+            "locator": f"FY{fy} Transparency Reso {reso}, chart "
+                       f"{col(cells, idx, 'chart')}",
+            "updated": None,
+        })
+
+    n = store.upsert("funding", out)
+    by_tier: dict[str, dict] = {}
+    for r in out:
+        slot = by_tier.setdefault(r["tier"], {"lines": 0, "amount": 0.0})
+        slot["lines"] += 1
+        slot["amount"] += r["amount"] or 0
+    store.set_meta(f"tr_ledger.fy{fy}", {
+        "lines": n, "by_tier": by_tier, "stated_net": (total_row or {}).get("net"),
+        "confirmed_net": by_tier.get(CONFIRMED_TIER, {}).get("amount"),
+        "reading": [c for c in (rows[-1] if rows else []) if len(c) > 120][:1],
+    })
+    store.journal("ingest.tr_ledger", {"rows": n, "by_tier": by_tier})
+    return {"tr_ledger_rows": n, "by_tier": by_tier,
+            "stated_net": (total_row or {}).get("net")}
+
+
+def ingest_channel_rollup(store: Store, text: str, fy: int = 2027,
+                          source_id: str = "SI_ROLLUP") -> dict:
+    """Load the channel/pot rollup, keeping capital and expense separate.
+
+    The office's rule, stated on the sheet itself: capital and expense are
+    separate measures and are never merged. The grand total exists only as two
+    components shown side by side, and any analysis that adds them is wrong.
+    """
+    rows = list(rows_from_markdown(text))
+    try:
+        hdr_i, idx = find_header(rows, "channel", "pot", "lines", "adopted")
+    except ValueError:
+        return {"rollup_pots": 0, "error": "header not found"}
+
+    pots: list[dict] = []
+    subtotals: dict[str, dict] = {}
+    grand: dict | None = None
+    for cells in rows[hdr_i + 1:]:
+        ch = col(cells, idx, "channel")
+        if not ch:
+            continue
+        rec = {"channel": ch, "pot": col(cells, idx, "pot / initiative", "pot"),
+               "lines": int(money(col(cells, idx, "lines")) or 0),
+               "adopted": money(col(cells, idx, "adopted")) or 0.0,
+               "tr_movement": money(col(cells, idx, "tr movement")) or 0.0}
+        up = ch.upper()
+        if up.startswith("GRAND"):
+            grand = rec
+        elif "SUBTOTAL" in up:
+            subtotals[up.replace(" SUBTOTAL", "").strip()] = rec
+        else:
+            pots.append(rec)
+
+    capital = [p for p in pots if p["channel"].upper().startswith("CAPITAL")]
+    expense = [p for p in pots if not p["channel"].upper().startswith("CAPITAL")]
+
+    def agg(rows_: list[dict]) -> dict:
+        return {"lines": sum(r["lines"] for r in rows_),
+                "adopted": round(sum(r["adopted"] for r in rows_), 2),
+                "tr_movement": round(sum(r["tr_movement"] for r in rows_), 2)}
+
+    payload = {
+        "pots": pots,
+        "capital": {**agg(capital), "pots": capital},
+        "expense": {**agg(expense), "pots": expense},
+        "stated_subtotals": subtotals,
+        "grand": grand,
+        "rule": ("Capital and expense are separate measures and are never "
+                 "merged. The grand total exists only as two components."),
+    }
+    store.set_meta(f"si_channel_rollup.fy{fy}", payload)
+    store.journal("ingest.channel_rollup",
+                  {"pots": len(pots), "capital": payload["capital"]["adopted"],
+                   "expense": payload["expense"]["adopted"]})
+    return {"rollup_pots": len(pots),
+            "capital": payload["capital"], "expense": payload["expense"]}

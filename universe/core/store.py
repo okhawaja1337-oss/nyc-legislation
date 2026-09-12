@@ -123,6 +123,9 @@ CREATE TABLE IF NOT EXISTS funding (
   section       TEXT,
   purpose       TEXT,
   status        TEXT,          -- adopted | TR-add | TR-cut | pending MOCS | cleared
+  tier          TEXT,          -- ADOPTED-IMPLEMENTATION | ADOPTED-PENDING-MOD
+                               -- | REVERSED | CONTEXT
+  reso          TEXT,          -- which Transparency Resolution moved it
   mocs_id       TEXT,
   analyst       TEXT,
   in_d49        INTEGER DEFAULT 0,
@@ -137,6 +140,8 @@ CREATE INDEX IF NOT EXISTS ix_funding_orgkey  ON funding(org_key);
 CREATE INDEX IF NOT EXISTS ix_funding_ein     ON funding(ein);
 CREATE INDEX IF NOT EXISTS ix_funding_pot     ON funding(pot);
 CREATE INDEX IF NOT EXISTS ix_funding_d49     ON funding(in_d49);
+CREATE INDEX IF NOT EXISTS ix_funding_tier    ON funding(tier);
+CREATE INDEX IF NOT EXISTS ix_funding_channel ON funding(channel);
 
 CREATE TABLE IF NOT EXISTS orgs (
   org_key       TEXT PRIMARY KEY,
@@ -258,7 +263,32 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path))
         self.conn.row_factory = sqlite3.Row
+        # Migrate before the schema script: it creates indexes over the new
+        # columns, and an index over a column that does not exist yet fails
+        # the whole script. On a fresh lake the migration is a no-op.
+        self._migrate()
         self.conn.executescript(SCHEMA)
+
+    # --------------------------------------------------------- migration --
+    # CREATE TABLE IF NOT EXISTS never adds a column to a table that already
+    # exists, so a lake built by an earlier version needs the new columns
+    # applied explicitly. Additive only -- nothing here drops or rewrites data.
+    MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+        ("funding", "tier", "TEXT"),
+        ("funding", "reso", "TEXT"),
+    )
+
+    def _migrate(self) -> None:
+        for table, column, decl in self.MIGRATIONS:
+            try:
+                cols = {r["name"] for r in
+                        self.conn.execute(f"PRAGMA table_info({table})")}
+            except sqlite3.OperationalError:
+                continue
+            if cols and column not in cols:
+                self.conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        self.conn.commit()
 
     # ------------------------------------------------------------ basics --
     @contextmanager

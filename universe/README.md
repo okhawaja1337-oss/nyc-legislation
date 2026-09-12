@@ -60,7 +60,8 @@ and Google Calendar connectors return (`{"fileContent": "..."}` and
 |---|---|---|
 | **The Council Record** | 234 members since 1992, 21,537 matters, 164,236 sponsorships, voting fingerprints, ideal points, election history, career forecasts | derived from Legistar, Wikidata, BOE |
 | **Schedule C, FY2022–FY2027** | 50,465 discretionary designations — every organization, EIN, amount, agency and purpose | official primary |
-| **Transparency Resolutions** | in-year adds, cuts and reallocations after adoption | official primary |
+| **Transparency Resolutions** | in-year adds, cuts and reallocations after adoption, line by line with provenance tiers | official primary |
+| **SI channel rollup** | every SI pot by channel, capital and expense kept apart | internal |
 | **Council tax forecast** | the Finance Division's own revenue projection against OMB | official primary |
 | **D49 MOCS tracker** | per-award pipeline status, analyst, change codes | internal |
 | **Staten Island reconciliation** | every SI funding line post-TR, by channel and pot | internal |
@@ -89,6 +90,27 @@ These are enforced in code, not asserted in a style guide.
 5. **Reconciliation is reported honestly.** When loaded detail does not foot to
    the authoritative total, the system says by how much rather than quietly
    reporting the part it happens to hold.
+6. **Capital and expense are never merged.** They are different measures. A
+   grand total exists only as two components shown side by side.
+7. **A pending-modification line is not money.** It does not take effect until
+   a budget modification passes, so it never enters a confirmed total.
+
+### Why the Transparency Resolution figure is not the headline figure
+
+FY2027's two resolutions show a net movement of **$502,851**. Only **$402,851**
+of that is confirmed money:
+
+- **$100,000** is a pending-modification designation to the Staten Island
+  Institute of Arts and Sciences. It does not exist until a budget
+  modification passes.
+- **$100,000** was designated to Sundog Theatre in TR#1 and rescinded in TR#2.
+
+That second one is the subtle case. A reversal is a **pair** — the rescinded
+designation *and* the line that rescinds it — and both must leave the confirmed
+figure, because together they move no money. Filtering on the provenance tier
+alone drops only the reversed half and understates confirmed money by the full
+$100,000. `universe funding reconcile` pairs them, excludes both, and shows
+its work; the arithmetic then foots exactly to the stated net.
 
 ---
 
@@ -182,7 +204,8 @@ index practice. It reproduces no other organization's proprietary methodology.
 ## Command reference
 
 ```
-universe load         --council-record --fiscal --mocs --si-rollup --calendar --greenbook
+universe load         --council-record --fiscal --mocs --si-rollup
+                      --channel-rollup --tr-ledger --calendar --greenbook
 universe status       what is loaded, what works, what the AI layer can do
 universe ask          "senior services funding"        full-text across everything
 universe brief        fiscal | member NAME | matter ID   [--council] [--ask "..."]

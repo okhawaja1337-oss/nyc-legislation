@@ -119,6 +119,94 @@ class TestLineIdentity(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
+class TestTransparencyResoTiers(unittest.TestCase):
+    """The two rules the office's own ledger states, enforced in code."""
+
+    LEDGER = (
+        "| Reso | Chart | Initiative | Organization — Program | EIN | Agy | "
+        "Amount | Member/Body | Tier | D49 status | Note / effect |\n"
+        "| TR#1 | 6 | Speaker's Initiative | Sundog Theatre, Inc. | 45-0476945 "
+        "| DCLA | 100000 | Speaker | REVERSED BY TR#2 | IN D49 | rescinded later |\n"
+        "| TR#2 | 6 | Speaker's Initiative | Sundog Theatre, Inc. | 45-0476945 "
+        "| DCLA | -100000 | Speaker | ADOPTED-IMPLEMENTATION | IN D49 | reversal |\n"
+        "| TR#2 | 6 | Speaker's Initiative | Staten Island Institute of Arts "
+        "| 13-5564127 | DCLA | 100000 | Speaker | ADOPTED-PENDING-MOD | IN D49 "
+        "| needs a budget modification |\n"
+        "| TR#2 | 16 | HIV/AIDS Pathways to Care | Project Hospitality, Inc. "
+        "| 13-3234441 | DHMH | 150000 | (citywide) | ADOPTED-IMPLEMENTATION "
+        "| IN D49 | new |\n"
+    )
+    ROLLUP = (
+        "| Channel | Pot / Initiative | Lines | Adopted | TR movement |\n"
+        "| CAPITAL §254 Sec I | Section 254 capital — Hanks | 18 | 5000000 |  |\n"
+        "| MDI (SI member) | Local Initiatives | 182 | 1200000 |  |\n"
+        "| CAPITAL SUBTOTAL |  | 18 | 5000000 | 0 |\n"
+        "| GRAND — CAPITAL + EXPENSE | two components | 200 | 6200000 | 0 |\n"
+    )
+
+    def setUp(self):
+        from ..ingest.sheets import ingest_channel_rollup, ingest_tr_ledger
+        self.s = fresh_store()
+        ingest_tr_ledger(self.s, self.LEDGER)
+        ingest_channel_rollup(self.s, self.ROLLUP)
+        self.rec = FI.reconcile_si(self.s)
+
+    def test_capital_and_expense_never_merge(self):
+        self.assertEqual(self.rec["capital"]["adopted"], 5_000_000)
+        self.assertEqual(self.rec["expense"]["adopted"], 1_200_000)
+        self.assertIn("never merged", self.rec["rule"].lower())
+
+    def test_pending_mod_is_excluded_from_confirmed(self):
+        tr = self.rec["tr_movement"]
+        self.assertEqual(tr["pending_mod"], 100_000)
+        self.assertNotIn(100_000, [tr["confirmed"]])
+
+    def test_reversal_pair_is_excluded_on_both_sides(self):
+        """Dropping only the reversed half understates confirmed money."""
+        tr = self.rec["tr_movement"]
+        # Sundog +100k (reversed) and -100k (the reversal) both drop out, so
+        # only the Project Hospitality 150k remains confirmed.
+        self.assertEqual(tr["confirmed"], 150_000)
+        self.assertEqual(tr["reversed_and_excluded"], 100_000)
+        self.assertEqual(len(tr["reversal_pairs"]), 1)
+        self.assertEqual(tr["reversal_pairs"][0]["designated_in"], "TR#1")
+        self.assertEqual(tr["reversal_pairs"][0]["reversed_in"], "TR#2")
+
+    def test_confirmed_plus_pending_foots_to_the_stated_net(self):
+        tr = self.rec["tr_movement"]
+        self.assertEqual(tr["check"]["confirmed_plus_pending"],
+                         (tr["confirmed"] or 0) + (tr["pending_mod"] or 0))
+
+
+class TestMigration(unittest.TestCase):
+    def test_new_columns_apply_to_an_existing_lake(self):
+        """CREATE TABLE IF NOT EXISTS never adds a column; migration must."""
+        import sqlite3
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        tmp.close()
+        # The realistic case: a lake built by the previous version of this
+        # schema, which had every funding column except tier and reso.
+        prior = """CREATE TABLE funding (
+          line_id TEXT PRIMARY KEY, fy INTEGER, channel TEXT, pot TEXT,
+          member TEXT, person_id INTEGER, district INTEGER, borough TEXT,
+          org TEXT, org_key TEXT, ein TEXT, program TEXT, agency TEXT,
+          amount REAL, section TEXT, purpose TEXT, status TEXT, mocs_id TEXT,
+          analyst TEXT, in_d49 INTEGER, pillar TEXT, source_id TEXT,
+          locator TEXT, updated TEXT)"""
+        conn = sqlite3.connect(tmp.name)
+        conn.execute(prior)
+        conn.execute("INSERT INTO funding (line_id, fy, amount) VALUES ('L1', 2027, 5)")
+        conn.commit()
+        conn.close()
+        s = Store(tmp.name)                      # must not raise
+        cols = {r["name"] for r in s.conn.execute("PRAGMA table_info(funding)")}
+        self.assertIn("tier", cols)
+        self.assertIn("reso", cols)
+        # Migration is additive: existing rows survive untouched.
+        self.assertEqual(s.scalar("SELECT amount FROM funding WHERE line_id='L1'"), 5)
+
+
 class TestIntegrityIndex(unittest.TestCase):
     def test_midpoint_penalises_both_extremes(self):
         ind = II.INDICATORS_BY_KEY["speaker_alignment"]

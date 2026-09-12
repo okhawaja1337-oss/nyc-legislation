@@ -205,15 +205,24 @@ V.brief = () => {
   <div class="grid">
    ${kpi('FY'+D.fy+' D49 designations', usd(f.portfolio.total), f.portfolio.lines+' lines')}
    ${kpi('Per resident', '$'+num(e.per_resident), 'rank '+e.rank+' of '+(f.equity.all||[]).length+' districts')}
-   ${kpi('Staten Island FY'+D.fy, usd(rec.stated.adopted), num(rec.stated.lines)+' funding lines')}
+   ${kpi('SI capital §254', usd(rec.capital.adopted), num(rec.capital.lines)+' lines — never merged with expense')}
+   ${kpi('SI expense', usd(rec.expense.adopted), num(rec.expense.lines)+' lines')}
+   ${kpi('TR confirmed', usd(rec.tr_movement.confirmed), 'vs '+usd(rec.tr_movement.stated_net)+' headline')}
    ${kpi('In MOCS pipeline', usd(f.pipeline.pending_total), pct(f.pipeline.pending_share_pct)+' of tracked')}
    ${kpi('Prime sponsored', num(t.prime), num(t.prime_enacted)+' enacted ('+pct((l.record.enactment_rate||0)*100)+')')}
    ${kpi('Accountability Index', (D.index.officials.find(o=>o.district===D.district)||{}).grade||'—',
         'peer percentile '+num((D.index.officials.find(o=>o.district===D.district)||{}).peer_percentile))}
   </div>
-  <div class="note"><b>Reconciliation:</b> ${esc(rec.reading)} Loaded detail covers
-   ${pct(rec.detail_coverage.lines_pct)} of lines and ${pct(rec.detail_coverage.dollars_pct)} of dollars.
-   Cite the rollup total (${usd(rec.stated.adopted)}), not a line count, until that gap closes.</div>
+  <div class="note"><b>${esc(rec.rule)}</b><br>
+   Capital ${usd(rec.capital.adopted)} over ${num(rec.capital.lines)} lines ·
+   Expense ${usd(rec.expense.adopted)} over ${num(rec.expense.lines)} lines.</div>
+  <div class="note"><b>Transparency Resolution movement.</b> The headline net is
+   ${usd(rec.tr_movement.stated_net)}, but confirmed money is
+   <b>${usd(rec.tr_movement.confirmed)}</b> —
+   ${usd(rec.tr_movement.pending_mod)} awaits a budget modification and
+   ${usd(rec.tr_movement.reversed_and_excluded)} was designated then rescinded
+   ${(rec.tr_movement.reversal_pairs||[]).map(p=>`(${esc(p.org)}, ${esc(p.designated_in)} → ${esc(p.reversed_in)})`).join(', ')}.
+   ${esc(rec.tr_movement.reading)}</div>
 
   <h2>What the delegation looks like</h2>
   <p class="muted">${esc(l.delegation.reading)}</p>

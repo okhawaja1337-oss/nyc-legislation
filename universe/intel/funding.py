@@ -369,61 +369,121 @@ def pipeline_risk(store: Store, fy: int, member: str | None = None) -> dict:
 
 # --------------------------------------------------------- reconciliation ----
 def reconcile_si(store: Store, fy: int = 2027) -> dict:
-    """Tie the Staten Island ledger out against the adopted books.
+    """Tie the Staten Island position out, by channel and by provenance tier.
 
-    Reports coverage honestly: if the loaded detail does not foot to the
-    stated total, it says by how much rather than quietly reporting the part
-    it happens to have.
+    Two rules the office runs on, both taken from its own ledger:
+
+    * **Capital and expense are never merged.** They are different measures.
+      A grand total exists only as two components shown side by side.
+    * **A pending-modification line is not money.** It does not take effect
+      until a budget modification passes, so it never enters a confirmed
+      total. Reporting it as confirmed is how an office ends up defending a
+      number that was never appropriated.
     """
-    meta = store.get_meta(f"si_rollup.fy{fy}") or {}
-    totals = meta.get("totals") or {}
-    rollup = meta.get("rollup") or []
+    roll = store.get_meta(f"si_channel_rollup.fy{fy}") or {}
+    legacy = store.get_meta(f"si_rollup.fy{fy}") or {}
+    ledger = store.get_meta(f"tr_ledger.fy{fy}") or {}
+
+    cap = roll.get("capital") or {}
+    exp = roll.get("expense") or {}
+    grand = roll.get("grand") or {}
+
+    # Tiered TR movement straight from the lake.
+    tiers = _rows(store, """
+        SELECT COALESCE(tier,'UNSPECIFIED') AS tier, COUNT(*) AS lines,
+               SUM(amount) AS amount
+        FROM funding WHERE source_id = 'SI_TR_LEDGER' AND fy = ?
+        GROUP BY tier ORDER BY amount DESC
+    """, [fy])
+    by_tier = {t["tier"]: t for t in tiers}
+    pending = (by_tier.get("ADOPTED-PENDING-MOD") or {}).get("amount")
+
+    # A reversal is a *pair*: the designation that was rescinded, and the line
+    # in the later resolution that rescinds it. Both net to zero and both must
+    # leave the confirmed figure. Dropping only the reversed half -- which is
+    # what a naive tier filter does -- understates confirmed money by the full
+    # amount of the reversal.
+    lines = _rows(store, """
+        SELECT line_id, org_key, org, amount, tier, reso
+        FROM funding WHERE source_id = 'SI_TR_LEDGER' AND fy = ?
+    """, [fy])
+    reversed_lines = [r for r in lines if r["tier"] == "REVERSED"]
+    excluded: set[str] = set()
+    pairs: list[dict] = []
+    for rv in reversed_lines:
+        mate = next((r for r in lines
+                     if r["line_id"] not in excluded
+                     and r["line_id"] != rv["line_id"]
+                     and r["org_key"] == rv["org_key"]
+                     and abs((r["amount"] or 0) + (rv["amount"] or 0)) < 0.01), None)
+        excluded.add(rv["line_id"])
+        if mate:
+            excluded.add(mate["line_id"])
+            pairs.append({"org": (rv["org"] or "").split(" — ")[0],
+                          "amount": rv["amount"],
+                          "designated_in": rv["reso"], "reversed_in": mate["reso"]})
+
+    confirmed = round(sum(
+        (r["amount"] or 0) for r in lines
+        if r["tier"] == "ADOPTED-IMPLEMENTATION" and r["line_id"] not in excluded), 2)
+    reversal_total = round(sum(abs(p["amount"] or 0) for p in pairs), 2)
 
     loaded = store.one("""
         SELECT COUNT(*) AS lines, SUM(amount) AS total
         FROM funding WHERE source_id = 'SI_ROLLUP' AND fy = ?
     """, [fy])
-    loaded_lines = loaded["lines"] if loaded else 0
-    loaded_total = loaded["total"] if loaded else 0
 
-    stated_lines = totals.get("lines")
-    stated_total = totals.get("adopted")
-
-    rollup_total = sum((r.get("adopted") or 0) for r in rollup)
-    rollup_lines = sum(int(r.get("lines") or 0) for r in rollup)
+    stated_lines = (legacy.get("totals") or {}).get("lines")
+    stated_total = (legacy.get("totals") or {}).get("adopted") or grand.get("adopted")
 
     return {
         "fy": fy,
-        "stated": {"lines": stated_lines, "adopted": stated_total,
-                   "tr_movement": totals.get("tr_movement"),
-                   "note": totals.get("note")},
-        "rollup_sum": {"lines": rollup_lines, "adopted": rollup_total,
-                       "pots": len(rollup)},
-        "loaded_detail": {"lines": loaded_lines, "total": loaded_total},
-        "rollup_vs_stated": {
-            "lines_delta": (rollup_lines - stated_lines) if stated_lines else None,
-            "dollar_delta": (round(rollup_total - stated_total, 2)
-                             if stated_total else None),
-            "foots": (abs(rollup_total - (stated_total or 0)) < 1
-                      if stated_total else None),
+        "rule": roll.get("rule", "Capital and expense are never merged."),
+        "capital": {"lines": cap.get("lines"), "adopted": cap.get("adopted"),
+                    "tr_movement": cap.get("tr_movement")},
+        "expense": {"lines": exp.get("lines"), "adopted": exp.get("adopted"),
+                    "tr_movement": exp.get("tr_movement")},
+        "grand_components": {
+            "lines": grand.get("lines"),
+            "adopted": grand.get("adopted"),
+            "note": ("Shown as two components. Do not cite capital and expense "
+                     "as one number."),
+        },
+        "stated_subtotals": roll.get("stated_subtotals", {}),
+        "tr_movement": {
+            "stated_net": ledger.get("stated_net"),
+            "confirmed": confirmed,
+            "pending_mod": pending,
+            "reversal_pairs": pairs,
+            "reversed_and_excluded": reversal_total,
+            "check": {
+                "confirmed_plus_pending": round((confirmed or 0) + (pending or 0), 2),
+                "stated_net": ledger.get("stated_net"),
+                "foots": (abs((confirmed or 0) + (pending or 0)
+                              - (ledger.get("stated_net") or 0)) < 1),
+            },
+            "by_tier": tiers,
+            "reading": (
+                "Confirmed movement is the only figure that may be cited as "
+                "money. Pending-modification lines do not take effect until a "
+                "budget modification passes. A reversal is a pair -- the "
+                "rescinded designation and the line that rescinds it -- and "
+                "both leave the confirmed figure, because together they move "
+                "no money."),
         },
         "detail_coverage": {
-            "lines_pct": pct(loaded_lines, stated_lines),
-            "dollars_pct": pct(loaded_total, stated_total),
-            "missing_lines": (stated_lines - loaded_lines) if stated_lines else None,
-            "missing_dollars": (round((stated_total or 0) - (loaded_total or 0), 2)
-                                if stated_total else None),
+            "loaded_lines": loaded["lines"] if loaded else 0,
+            "stated_lines": stated_lines,
+            "lines_pct": pct(loaded["lines"] if loaded else 0, stated_lines),
+            "dollars_pct": pct(loaded["total"] if loaded else 0, stated_total),
+            "missing_lines": ((stated_lines - loaded["lines"])
+                              if stated_lines and loaded else None),
         },
-        "by_channel": _rows(store, """
-            SELECT channel, COUNT(*) AS lines, SUM(amount) AS total
-            FROM funding WHERE source_id = 'SI_ROLLUP' AND fy = ?
-            GROUP BY channel
-        """, [fy]),
         "source_id": "SI_ROLLUP",
-        "reading": ("Detail is partial -- the rollup totals are authoritative; "
-                    "reload the full ledger export before citing line counts."
-                    if stated_lines and loaded_lines < stated_lines
-                    else "Detail foots to the stated total."),
+        "reading": ("Cite the channel subtotals, never a merged grand total. "
+                    "Line-level detail is partial where coverage is under 100%."
+                    if stated_lines and loaded and loaded["lines"] < stated_lines
+                    else "Detail foots to the stated totals."),
     }
 
 

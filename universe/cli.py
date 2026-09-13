@@ -341,6 +341,58 @@ def cmd_connect(a, store: Store) -> None:
             "transcripts": captions.coverage(store)}, raw=True)
 
 
+def cmd_pipeline(a, store: Store) -> None:
+    """The deliverable contract: inputs, outputs, and the gate on each stage."""
+    from .core import pipeline as P
+    if a.action == "readiness":
+        got = P.readiness(store)
+        print("READY" if got["ready"] else "NOT READY")
+        for table, n in got["counts"].items():
+            mark = "  " if n else "!!"
+            print(f"  {mark} {table:14s}{n if n is not None else 'missing':>10}")
+        print(f"\n{got['note']}")
+        return
+    if a.action == "gates":
+        for stage in P.contract():
+            print(f"\n=== {stage['name'].upper()}  —  {stage['does']}")
+            for g in stage["gates"]:
+                print(f"  [{g['severity']:8s}] {g['asks']}")
+                print(f"             {g['because']}")
+        return
+    if a.action == "check":
+        got = _p(None, raw=False) if False else None
+        row = store.one("SELECT * FROM deliverables WHERE deliverable_id=?", (a.id,))
+        if not row:
+            print("no such deliverable"); return
+        meta = json.loads(row["meta"] or "{}")
+        receipt = meta.get("receipt")
+        if not receipt:
+            print(f"{row['deliverable_id']} was filed before the contract "
+                  f"existed; re-run it to get a receipt."); return
+        print(f"{row['kind']}: {row['subject']}")
+        print(f"VERDICT: {receipt['verdict'].upper()}")
+        print(receipt["why"])
+        for st in receipt["stages"]:
+            print(f"\n{'OK ' if st['passed'] else '!! '}{st['name']}")
+            for g in st["gates"]:
+                print(f"     [{'PASS' if g['passed'] else 'FAIL'}] {g['asks']}")
+                print(f"            {g['found']}")
+        return
+    # default: show the declared contract, inputs and outputs
+    for stage in P.contract():
+        blocking = sum(1 for g in stage["gates"] if g["severity"] == "blocking")
+        print(f"\n=== {stage['name'].upper()}")
+        print(f"    {stage['does']}")
+        print(f"    IN   {' · '.join(stage['consumes'])}")
+        print(f"    OUT  {' · '.join(stage['produces'])}")
+        print(f"    GATE {len(stage['gates'])} checks, {blocking} blocking")
+        for g in stage["gates"]:
+            flag = "!" if g["severity"] == "blocking" else " "
+            print(f"      {flag} {g['asks']}")
+    print("\nA blocking gate that fails stops the deliverable from being filed.")
+    print("Run `universe pipeline readiness` to see whether the inputs exist.")
+
+
 def cmd_directory(a, store: Store) -> None:
     """The Staten Island contact directory, across every level of government."""
     from .live import si_directory as SD
@@ -620,6 +672,14 @@ def build_parser() -> argparse.ArgumentParser:
                     choices=["auto", "timedtext", "innertube", "provider", "sidecar"])
     cn_sub.add_parser("status", help="what is connected and what is not")
     cn.set_defaults(fn=cmd_connect)
+
+    pl = sub.add_parser("pipeline",
+                        help="the deliverable contract: inputs, outputs, gates")
+    pl.add_argument("action", nargs="?",
+                    choices=["contract", "gates", "readiness", "check"],
+                    default="contract")
+    pl.add_argument("--id", help="a deliverable id, for `check`")
+    pl.set_defaults(fn=cmd_pipeline)
 
     dr = sub.add_parser("directory",
                         help="Staten Island contacts at every level of government")

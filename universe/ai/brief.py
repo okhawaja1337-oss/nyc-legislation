@@ -124,6 +124,10 @@ def evidence_for_member(store: Store, who: str, fy: int = 2027) -> dict:
         "concentration": FI.concentration(store, last, fy),
         "churn": FI.org_trajectories(store, last),
         "equity": FI.district_equity(store, fy),
+        # The citywide trend belongs in the packet, not in the renderer. The
+        # talking points quote the growth rate, and a figure the prose prints
+        # but the evidence never carries is a figure the reader cannot trace.
+        "citywide": FI.citywide_context(store),
         "scorecard": II.official_scorecard(store, who, fy),
         "sources": ["COUNCIL_RECORD", "SCHEDULE_C", "LEGISTAR"],
     }
@@ -235,7 +239,7 @@ def member_brief(store: Store, who: str, fy: int = 2027,
     ]
     b.talking_points = [
         f"Since FY2022 the Council's discretionary pot grew "
-        f"{_fmt(FI.citywide_context(store)['growth']['total_pct'], 'pct')}; "
+        f"{_fmt(ev['citywide']['growth']['total_pct'], 'pct')}; "
         f"District {DISTRICT}'s job is to convert that growth into North Shore "
         "capacity, not just North Shore grants.",
         f"We sustain {ev['churn']['counts']['sustained']} organizations year over "

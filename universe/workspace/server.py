@@ -333,6 +333,36 @@ class Handler(BaseHTTPRequestHandler):
                 "sheets": gsheets.connections(s, "sheet"),
                 "calendar": s.get_meta("calendar.last_sync"),
                 "transcripts": cap.coverage(s)})
+        if path == "/api/pipeline":
+            from ..core import pipeline as P
+            return self.send({"contract": P.contract(),
+                              "readiness": P.readiness(s)})
+        if path == "/api/pipeline/receipt":
+            row = s.one("SELECT deliverable_id, kind, subject, status, meta "
+                        "FROM deliverables WHERE deliverable_id=?",
+                        (a.get("id", ""),))
+            if not row:
+                return self.fail("No such deliverable.", 404)
+            meta = json.loads(row["meta"] or "{}")
+            return self.send({"deliverable_id": row["deliverable_id"],
+                              "kind": row["kind"], "subject": row["subject"],
+                              "status": row["status"],
+                              "receipt": meta.get("receipt")})
+        if path == "/api/pipeline/receipts":
+            out = []
+            for row in s.q("SELECT deliverable_id, kind, subject, status, meta, "
+                           "created FROM deliverables ORDER BY created DESC LIMIT ?",
+                           (min(int(a.get("limit", 25)), 100),)):
+                meta = json.loads(row["meta"] or "{}")
+                receipt = meta.get("receipt") or {}
+                out.append({"deliverable_id": row["deliverable_id"],
+                            "kind": row["kind"], "subject": row["subject"],
+                            "status": row["status"], "created": row["created"],
+                            "verdict": receipt.get("verdict"),
+                            "why": receipt.get("why"),
+                            "blockers": len(receipt.get("blockers") or []),
+                            "warnings": len(receipt.get("warnings") or [])})
+            return self.send(out)
         if path == "/api/quotes":
             from ..connect import captions as cap
             return self.send(cap.quotes(s, a.get("q", ""),

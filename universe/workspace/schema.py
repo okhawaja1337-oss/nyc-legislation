@@ -160,6 +160,11 @@ CREATE INDEX IF NOT EXISTS workspace_fy      ON workspace_records(kind, fy);
 CREATE INDEX IF NOT EXISTS workspace_amount  ON workspace_records(kind, amount);
 CREATE INDEX IF NOT EXISTS workspace_sponsor ON workspace_records(sponsor);
 CREATE INDEX IF NOT EXISTS workspace_kindyr  ON workspace_records(kind, year, fy, status);
+CREATE INDEX IF NOT EXISTS workspace_init    ON workspace_records(initiative);
+CREATE INDEX IF NOT EXISTS workspace_tier    ON workspace_records(kind, tier);
+CREATE INDEX IF NOT EXISTS workspace_spkey   ON workspace_records(sponsor_key);
+CREATE INDEX IF NOT EXISTS workspace_cmte    ON workspace_records(committee);
+CREATE INDEX IF NOT EXISTS workspace_agency  ON workspace_records(agency);
 CREATE INDEX IF NOT EXISTS ix_ws_tasks_project ON workspace_tasks(project_id);
 CREATE INDEX IF NOT EXISTS ix_ws_tasks_parent  ON workspace_tasks(parent_id);
 CREATE INDEX IF NOT EXISTS ix_ws_tasks_owner   ON workspace_tasks(owner, status);
@@ -189,6 +194,14 @@ MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("workspace_records", "pillar", "TEXT"),
     ("workspace_records", "ein", "TEXT"),
     ("workspace_records", "fy", "INTEGER"),
+    # Breakdown dimensions. `pot` and `tier` used to live inside the detail
+    # JSON, which meant "break the budget down by initiative" could not be a
+    # query -- and that is the cut a budget director asks for most.
+    ("workspace_records", "initiative", "TEXT"),
+    ("workspace_records", "tier", "TEXT"),
+    # A case- and format-stable key for a person, so "HANKS" and "Hanks" are
+    # one bucket rather than two half-totals.
+    ("workspace_records", "sponsor_key", "TEXT"),
     ("workspace_watches", "person", "TEXT"),
     ("workspace_watches", "last_seen", "TEXT"),
 )

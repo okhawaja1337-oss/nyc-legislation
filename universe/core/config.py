@@ -221,12 +221,27 @@ OPEN_DATASETS = {
     "ye4r-qpmp": ("ACS Demographics by District", "OFFICIAL_DERIVED"),
 }
 
-SOCRATA_APP_TOKEN = os.environ.get("SOCRATA_APP_TOKEN") or os.environ.get("NYC_APP_TOKEN")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-LLM_COUNCIL_URL = os.environ.get("LLM_COUNCIL_URL", "http://localhost:8001")
+# Credentials resolve through core.keys: environment first, then a config file
+# under the user's home directory. Nothing here reads a secret out of the repo,
+# and these module attributes stay dynamic so a key set after import is seen.
+from . import keys as _keys
 
-D49_CALENDAR_ID = os.environ.get(
-    "D49_CALENDAR_ID", "g32f5p7pd3lfm8bie06acv5s0o@group.calendar.google.com"
+
+def anthropic_key(index: int = 0) -> str | None:
+    return _keys.get("anthropic_api_key", index=index)
+
+
+def anthropic_keys() -> list[str]:
+    return _keys.get_all("anthropic_api_key")
+
+
+SOCRATA_APP_TOKEN = (_keys.get("socrata_app_token")
+                     or os.environ.get("NYC_APP_TOKEN"))
+ANTHROPIC_API_KEY = _keys.get("anthropic_api_key")
+LLM_COUNCIL_URL = _keys.setting("llm_council_url", "http://localhost:8001")
+
+D49_CALENDAR_ID = _keys.setting(
+    "d49_calendar_id", "g32f5p7pd3lfm8bie06acv5s0o@group.calendar.google.com"
 )
 
 # Staff initials seen on the D49 calendar, for ownership routing.

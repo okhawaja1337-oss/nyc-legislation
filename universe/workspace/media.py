@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS ws_media (
   duration TEXT,
   summary TEXT,
   transcript TEXT,      -- only ever a real transcript, never generated
+  transcript_source TEXT, -- where it came from, and whether it was auto-generated
   mentions_member INTEGER DEFAULT 0,
   matter_id INTEGER,
   fetched TEXT
@@ -72,9 +73,18 @@ ATOM = {"a": "http://www.w3.org/2005/Atom",
         "yt": "http://www.youtube.com/xml/schemas/2015"}
 
 
+# Columns added after the media table shipped. A lake built before them must
+# come forward rather than fail on the first query that names one.
+MEDIA_MIGRATIONS = (("transcript_source", "TEXT"),)
+
+
 def init(store) -> None:
     schema.apply(store.conn)
     store.conn.executescript(MEDIA_SCHEMA)
+    have = {r[1] for r in store.conn.execute("PRAGMA table_info(ws_media)")}
+    for column, decl in MEDIA_MIGRATIONS:
+        if column not in have:
+            store.conn.execute(f"ALTER TABLE ws_media ADD COLUMN {column} {decl}")
     store.conn.commit()
 
 
@@ -246,15 +256,23 @@ def collect_hearings(store, days: int = 60) -> dict:
 
 
 def add_transcript(store, media_id: str, transcript: str,
-                   speakers: str = "", actor: str = "") -> dict:
-    """Attach a real transcript. Never generated -- pasted or captioned."""
+                   speakers: str = "", actor: str = "", source: str = "") -> dict:
+    """
+    Attach a real transcript. Never generated -- pasted or captioned.
+
+    `source` records where the words came from and whether a machine produced
+    them. A press secretary deciding whether to put a sentence on letterhead
+    needs to know it was auto-captioned, and finding that out afterwards is
+    too late.
+    """
     if not store.scalar("SELECT 1 FROM ws_media WHERE id=?", [media_id]):
         raise ValueError("That clip is not in the media library.")
     store.conn.execute(
         "UPDATE ws_media SET transcript=?, speakers=COALESCE(NULLIF(?,''),speakers), "
+        "transcript_source=COALESCE(NULLIF(?,''), transcript_source), "
         "mentions_member=CASE WHEN ? THEN 1 ELSE mentions_member END WHERE id=?",
-        (transcript[:200000], speakers[:400], 1 if _mentions(transcript) else 0,
-         media_id))
+        (transcript[:200000], speakers[:400], source[:200],
+         1 if _mentions(transcript) else 0, media_id))
     store.conn.commit()
     events.emit(store, "media.transcript", "media", media_id,
                 "Transcript attached", actor)

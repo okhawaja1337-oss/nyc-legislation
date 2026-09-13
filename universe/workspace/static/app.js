@@ -95,6 +95,17 @@ async function loadShell() {
   $('#me-avatar').textContent = initials(state.me);
   const job = state.status.job || {};
   $('#job').textContent = job.status === 'Running' ? '↻ ' + job.name : '';
+
+  // The two live counters in the sidebar. A failure here must not stop the
+  // shell from loading -- the workspace still works with no counts on it.
+  try {
+    const [changes, meetings] = await Promise.all([
+      api('/api/changes/status'), api('/api/meetings?days=7')]);
+    $('#change-count').textContent = changes.unacknowledged_high || '';
+    const ahead = meetings.filter(m =>
+      ['oversight', 'hearing', 'stated'].includes(m.packet_kind) && !m.has_packet).length;
+    $('#meeting-count').textContent = ahead || '';
+  } catch (e) { /* counters are a convenience, not the page */ }
 }
 
 function renderPeople() {
@@ -127,10 +138,13 @@ function renderTree() {
   });
 }
 
+
+
 /* ------------------------------------------------------------ routing */
 const TITLES = { home: 'Home', mywork: 'My work', inbox: 'Inbox', calendar: 'Calendar',
   workload: 'Workload', search: 'Search', assistant: 'Assistant', media: 'Media & press',
-  sources: 'Sources', project: 'Project' };
+  sources: 'Sources', project: 'Project', meetings: 'Meetings', changes: 'What changed',
+  breakdown: 'Breakdowns', connections: 'Connections' };
 
 async function route() {
   const [name, qs] = (location.hash.slice(1) || 'home').split('?');
@@ -660,6 +674,31 @@ function wire() {
   $$('[data-transcript]').forEach(b => b.onclick = () => promptTranscript(b.dataset.transcript));
   $$('[data-act]').forEach(b => b.onclick = () => action(b.dataset.act, b));
 
+  // A select that simply narrows the current view: change one parameter and
+  // stay put, rather than resetting every other choice the user has made.
+  $$('[data-param]').forEach(sel => sel.onchange = () => {
+    const params = { ...state.params, [sel.dataset.param]: sel.value };
+    if (!sel.value) delete params[sel.dataset.param];
+    delete params.packet;
+    location.hash = `#${state.route}?` + new URLSearchParams(params);
+  });
+  $$('[data-ack]').forEach(b => b.onclick = async () => {
+    try { await api('/api/changes/ack', { id: b.dataset.ack, who: state.me });
+      toast('Marked seen'); render();
+    } catch (e) { toast(e.message); }
+  });
+  $$('[data-packet]').forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = 'Preparing…';
+    try { await api('/api/meetings/build', { event_id: b.dataset.packet, who: state.me });
+      toast('Building the packet — it will appear when the evidence is assembled.');
+    } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Prepare'; }
+  });
+  $$('[data-sync]').forEach(b => b.onclick = async () => {
+    try { await api('/api/connect/sync', { what: b.dataset.sync });
+      toast(`Syncing ${b.dataset.sync} in the background…`);
+    } catch (e) { toast(e.message); }
+  });
+
   const sf = $('#search-form');
   if (sf) sf.onsubmit = e => { e.preventDefault();
     location.hash = '#search?q=' + encodeURIComponent(sf.q.value); };
@@ -782,6 +821,16 @@ async function action(act, el) {
       return toast('Collecting media in the background…'); }
     if (act === 'reindex') { await api('/api/reindex', {});
       return toast('Rebuilding the search index…'); }
+    if (act === 'scan') { await api('/api/watch/scan', {});
+      return toast('Scanning the budget and the docket for changes…'); }
+    if (act === 'week') { await api('/api/meetings/week', { days: state.params.days || 7 });
+      return toast('Preparing every meeting in the window…'); }
+    if (act === 'breakdown-go') {
+      const params = { ...state.params, q: $('#bd-q')?.value || '' };
+      if (!params.q) delete params.q;
+      delete params.packet;
+      return location.hash = '#breakdown?' + new URLSearchParams(params);
+    }
     if (act === 'read-all') { await api('/api/inbox/read', { person: state.me });
       loadShell(); return render(); }
     if (act === 'new-task') return newTask(el?.dataset.project, el?.dataset.section);
@@ -880,3 +929,215 @@ async function start() {
 }
 
 boot();
+
+/* --------------------------------------------------- what changed */
+const SEV = { high: 'alert', medium: 'warn', low: '' };
+
+VIEWS.changes = async () => {
+  const hours = Number(state.params.hours || 168);
+  const [digest, status] = await Promise.all([
+    api('/api/changes/digest?hours=' + hours),
+    api('/api/changes/status')]);
+  const last = status.last_scan || {};
+  const rows = digest.items.map(c => `
+    <tr class="sev-${esc(c.severity)}">
+      <td><span class="tag ${SEV[c.severity] || ''}">${esc(c.severity)}</span></td>
+      <td><strong>${esc(c.label || '')}</strong>
+          <div class="muted">${esc(c.field || c.change)}:
+            <s>${esc(c.before ?? '—')}</s> → <b>${esc(c.after ?? '—')}</b></div>
+          <div class="muted">${esc(c.why || '')}</div></td>
+      <td class="nowrap muted">${esc((c.at || '').slice(0, 16).replace('T', ' '))}</td>
+      <td class="nowrap">${esc(c.source_id || '')}</td>
+      <td>${c.acknowledged ? '<span class="muted">seen</span>'
+            : `<button class="btn tiny" data-ack="${esc(c.id)}">Mark seen</button>`}</td>
+    </tr>`).join('');
+
+  return head('Live', 'What changed',
+      'Every watched record is fingerprinted on each scan. A diff is arithmetic, not a guess.')
+    + `<div class="cards">
+        ${metric('Changes', digest.total, `last ${Math.round(hours / 24)} days`)}
+        ${metric('Worth attention', digest.high, 'high severity')}
+        ${metric('Reversals', digest.reversals.length, 'money pulled back')}
+        ${metric('Net movement', fmtMoney(digest.net_funding_delta), 'tracked awards')}
+      </div>
+      <div class="card"><p class="lead">${esc(digest.headline)}</p>
+        <div class="row gap">
+          <button class="btn" data-act="scan">Scan now</button>
+          <select data-param="hours">
+            ${[24, 72, 168, 720].map(h => `<option value="${h}"${h === hours ? ' selected' : ''}>
+              last ${h < 48 ? h + ' hours' : Math.round(h / 24) + ' days'}</option>`).join('')}
+          </select>
+          <span class="muted">Last scan ${esc((last.at || 'never').slice(0, 16).replace('T', ' '))}
+            · watching ${Object.values(status.watched || {}).reduce((a, b) => a + b, 0).toLocaleString()} records</span>
+        </div></div>`
+    + (rows ? `<div class="card table-wrap"><table class="grid">
+        <thead><tr><th></th><th>What moved</th><th>When</th><th>Source</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+      : `<div class="empty"><h3>Nothing has moved</h3>
+          <p>No tracked change in this window. Run a scan to check again.</p></div>`);
+};
+
+/* ----------------------------------------------------- breakdowns */
+VIEWS.breakdown = async () => {
+  const by = state.params.by || 'member';
+  const q = state.params.q || '';
+  const kind = state.params.kind || 'funding';
+  const fy = state.params.fy || '';
+  const dims = await api('/api/breakdown/dimensions');
+  const qs = new URLSearchParams({ by, q, kind, top: '25' });
+  if (fy) qs.set('fy', fy);
+  const cut = await api('/api/breakdown?' + qs);
+
+  const rows = cut.buckets.map(b => `
+    <tr><td><strong>${esc(b.display || b.value)}</strong></td>
+      <td class="num">${b.records.toLocaleString()}</td>
+      <td class="num">${fmtMoney(b.amount)}</td>
+      <td class="num">${fmtMoney(b.confirmed)}</td>
+      <td class="num${b.pending ? ' warn-text' : ''}">${fmtMoney(b.pending)}</td>
+      <td class="num${b.reversed ? ' alert-text' : ''}">${fmtMoney(b.reversed)}</td></tr>`).join('');
+
+  return head('Research', 'Breakdowns',
+      'Cut any legislation or budget search by member, initiative, committee, agency, year or tier.')
+    + `<div class="card"><div class="row gap wrap">
+        <input id="bd-q" class="grow" placeholder="Filter the records first (optional)"
+               value="${esc(q)}">
+        <select data-param="by">${dims.map(d =>
+          `<option value="${esc(d.name)}"${d.name === by ? ' selected' : ''}>by ${esc(d.name)}</option>`).join('')}</select>
+        <select data-param="kind">${['funding', 'matter', 'org', 'calendar'].map(k =>
+          `<option value="${esc(k)}"${k === kind ? ' selected' : ''}>${esc(k)}</option>`).join('')}</select>
+        <select data-param="fy"><option value="">all years</option>${
+          [2027, 2026, 2025, 2024, 2023, 2022].map(y =>
+          `<option value="${y}"${String(y) === String(fy) ? ' selected' : ''}>FY${y}</option>`).join('')}</select>
+        <button class="btn primary" data-act="breakdown-go">Break it down</button>
+      </div>
+      <p class="muted">${esc((dims.find(d => d.name === by) || {}).means || '')}</p></div>`
+    + `<div class="cards">
+        ${metric('Records', cut.totals.records.toLocaleString(), `${cut.totals.buckets} buckets`)}
+        ${metric('Tracked', fmtMoney(cut.totals.amount), 'all matching lines')}
+        ${metric('Confirmed', fmtMoney(cut.totals.confirmed), 'nothing outstanding')}
+        ${metric('Pending', fmtMoney(cut.totals.pending), 'needs a modification')}
+      </div>`
+    + `<div class="card table-wrap"><table class="grid">
+        <thead><tr><th>${esc(by)}</th><th class="num">Records</th><th class="num">Amount</th>
+        <th class="num">Confirmed</th><th class="num">Pending</th><th class="num">Reversed</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6">Nothing matched.</td></tr>'}</tbody></table>
+        ${cut.other ? `<p class="muted">${cut.other.buckets} further buckets hold
+          ${cut.other.records.toLocaleString()} records and ${fmtMoney(cut.other.amount)}.</p>` : ''}
+        <p class="note">Confirmed is money with nothing outstanding against it. Pending needs a
+        budget modification before it can be announced. Reversed is the signed value of lines a
+        later resolution undid — pair a reversal with the award it cancels before quoting a net figure.</p>
+        <p class="muted">Sources: ${esc(cut.sources.join(', ') || '—')}</p></div>`;
+};
+
+/* ------------------------------------------------------- meetings */
+VIEWS.meetings = async () => {
+  const days = Number(state.params.days || 14);
+  const [items, packets] = await Promise.all([
+    api('/api/meetings?days=' + days), api('/api/meetings/packets?limit=40')]);
+  const PREPARABLE = ['oversight', 'hearing', 'stated', 'caucus'];
+  const live = items.filter(e => !['deferred', 'none'].includes(e.packet_kind));
+  const off = items.filter(e => e.packet_kind === 'deferred');
+  const byEvent = {};
+  packets.forEach(p => { byEvent[p.event_id] = p; });
+
+  const row = e => `<tr>
+    <td class="nowrap">${esc((e.start || '').slice(0, 16).replace('T', ' '))}</td>
+    <td><span class="tag${e.packet_kind === 'oversight' ? ' alert' : ''}">${esc(e.packet_kind)}</span></td>
+    <td><strong>${esc(e.summary || '')}</strong>
+        <div class="muted">${esc(e.committee || '')}${e.location ? ' · ' + esc(e.location) : ''}</div></td>
+    <td>${(e.owners || []).map(o => `<span class="avatar tiny">${esc(o)}</span>`).join(' ')}</td>
+    <td class="nowrap">${byEvent[e.event_id]
+      ? `<a class="btn tiny" href="#meetings?packet=${encodeURIComponent(byEvent[e.event_id].id)}">Read packet</a>`
+      : PREPARABLE.includes(e.packet_kind)
+        ? `<button class="btn tiny" data-packet="${esc(e.event_id)}">Prepare</button>`
+        : ''}</td></tr>`;
+
+  if (state.params.packet) {
+    const got = await api('/api/meetings/packet?id=' + encodeURIComponent(state.params.packet));
+    return head('Meetings', got.title, `${esc(got.kind)} packet · ${esc(got.mode)}`)
+      + `<div class="card"><a class="btn tiny" href="#meetings">← All meetings</a></div>`
+      + `<div class="card doc">${md(got.body || '')}</div>`;
+  }
+
+  return head('Meetings', 'Meetings and packets',
+      'Every hearing on the calendar, with the agenda, the district stake, and the questions ready.')
+    + `<div class="cards">
+        ${metric('Ahead', live.length, `next ${days} days`)}
+        ${metric('Oversight', live.filter(e => e.packet_kind === 'oversight').length, 'question sets needed')}
+        ${metric('Packets built', packets.length, 'saved')}
+        ${metric('Deferred', off.length, 'no packet needed')}
+      </div>
+      <div class="card"><div class="row gap">
+        <button class="btn primary" data-act="week">Prepare the week</button>
+        <select data-param="days">${[7, 14, 30, 60].map(d =>
+          `<option value="${d}"${d === days ? ' selected' : ''}>next ${d} days</option>`).join('')}</select>
+      </div></div>`
+    + `<div class="card table-wrap"><table class="grid">
+        <thead><tr><th>When</th><th>Kind</th><th>Meeting</th><th>Owners</th><th></th></tr></thead>
+        <tbody>${live.map(row).join('') || '<tr><td colspan="5">Nothing scheduled.</td></tr>'}</tbody>
+      </table></div>`
+    + (off.length ? `<div class="card"><h3>Deferred or cancelled</h3>
+        <p class="muted">These stay on the calendar but are not happening, so no packet is built.</p>
+        <ul>${off.map(e => `<li>${esc((e.start || '').slice(0, 10))} — ${esc(e.summary)}</li>`).join('')}</ul>
+      </div>` : '');
+};
+
+/* ---------------------------------------------------- connections */
+VIEWS.connections = async () => {
+  const c = await api('/api/connect/status');
+  const creds = Object.entries(c.credentials).map(([name, info]) => `
+    <tr><td><code>${esc(name)}</code></td>
+      <td>${info.configured ? `<span class="tag">yes · ${info.count}</span>`
+                            : '<span class="muted">not set</span>'}</td>
+      <td class="muted">${esc(info.source)}</td>
+      <td class="muted">${esc((info.fingerprints || []).join(', '))}</td></tr>`).join('');
+  const sheets = (c.sheets || []).map(sh => `
+    <tr><td><strong>${esc(sh.label)}</strong><div class="muted">${esc(sh.role)}</div></td>
+      <td>${sh.last_status === 'ok' ? '<span class="tag">ok</span>'
+            : sh.last_status ? '<span class="tag alert">failed</span>'
+            : '<span class="muted">never synced</span>'}</td>
+      <td class="muted">${esc(sh.last_sync || '—')}</td>
+      <td class="num">${sh.last_rows ? sh.last_rows.toLocaleString() : ''}</td></tr>`).join('');
+  const cal = c.calendar || {};
+  const tr = c.transcripts || {};
+
+  return head('Live', 'Connections',
+      'Where this system reaches out, what answered, and what is still missing.')
+    + `<div class="cards">
+        ${metric('AI', c.ai.mode === 'deliberated' ? 'ready' : 'scaffold',
+                 `${c.ai.keys_configured || 0} key(s) · ${esc(c.ai.model)}`)}
+        ${metric('Calendar', cal.events ? cal.events.toLocaleString() : '—',
+                 cal.transport ? 'via ' + esc(cal.transport) : 'not synced')}
+        ${metric('Sheets', (c.sheets || []).filter(x => x.last_status === 'ok').length + '/' + (c.sheets || []).length,
+                 'books syncing')}
+        ${metric('Transcripts', (tr.coverage_pct || 0) + '%', `${tr.with_transcript || 0} of ${tr.media || 0}`)}
+      </div>
+      <div class="card"><div class="row gap wrap">
+        <button class="btn" data-sync="calendar">Sync calendar</button>
+        <button class="btn" data-sync="sheets">Sync sheets</button>
+        <button class="btn" data-sync="captions">Fetch transcripts</button>
+      </div>
+      <p class="note">Credentials live in your environment or <code>~/.d49/config.json</code>
+      with owner-only permissions. Nothing here is ever written into the repository.
+      Set one with <code>universe connect key set &lt;name&gt;</code>.</p></div>`
+    + `<div class="card table-wrap"><h3>Credentials</h3><table class="grid">
+        <thead><tr><th>Name</th><th>Configured</th><th>Read from</th><th>Fingerprint</th></tr></thead>
+        <tbody>${creds}</tbody></table></div>`
+    + `<div class="card table-wrap"><h3>Books</h3><table class="grid">
+        <thead><tr><th>Sheet</th><th>Status</th><th>Last sync</th><th class="num">Rows</th></tr></thead>
+        <tbody>${sheets || '<tr><td colspan="4">No sheets registered.</td></tr>'}</tbody></table></div>`
+    + `<div class="card"><h3>Transcripts</h3><p>${esc(tr.note || '')}</p>
+        <p class="muted">Quotes can only be drawn from a stored transcript. Where a transcript
+        is missing the item is summarisable but not quotable.</p></div>`;
+};
+
+function fmtMoney(n) {
+  const v = Number(n || 0);
+  if (!v) return '$0';
+  const sign = v < 0 ? '-' : '';
+  const a = Math.abs(v);
+  if (a >= 1e9) return `${sign}$${(a / 1e9).toFixed(2)}B`;
+  if (a >= 1e6) return `${sign}$${(a / 1e6).toFixed(1)}M`;
+  if (a >= 1e3) return `${sign}$${Math.round(a / 1e3)}K`;
+  return `${sign}$${Math.round(a)}`;
+}

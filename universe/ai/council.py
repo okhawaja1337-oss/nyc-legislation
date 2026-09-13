@@ -30,10 +30,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
-from ..core.config import (ANTHROPIC_API_KEY, DISTRICT_LABEL, HOUSE_STYLE,
-                           LAND_USE_DOCTRINE, MEMBER_NAME, PILLARS)
+from ..core import keys as _keys
+from ..core.config import (DISTRICT_LABEL, HOUSE_STYLE, LAND_USE_DOCTRINE,
+                           MEMBER_NAME, PILLARS)
 
-MODEL = os.environ.get("UNIVERSE_MODEL", "claude-opus-5")
+MODEL = os.environ.get("UNIVERSE_MODEL") or _keys.setting("model", "claude-opus-5")
 
 
 @dataclass(frozen=True)
@@ -126,30 +127,106 @@ vote count, a dollar figure, or another official's position."""
 
 
 # --------------------------------------------------------------- transport ----
-def _anthropic_client():
-    key = ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
+# Errors that mean "this key is no good, try the next one" rather than
+# "the request was wrong". A 400 is our fault and rotating keys will not fix it.
+ROTATE_ON = ("AuthenticationError", "PermissionDeniedError", "RateLimitError",
+             "NotFoundError")
+
+# Reasoning costs output tokens before a word of the answer is written, so
+# every request needs headroom for it. These bracket what a brief may spend.
+MIN_TOKENS = 4000
+MAX_TOKENS = 32000
+
+
+def _anthropic_client(index: int = 0):
+    """A client for the Nth configured key, or None when that key is absent."""
+    all_keys = _keys.get_all("anthropic_api_key")
+    if index >= len(all_keys):
         return None
     try:
         import anthropic
     except ImportError:
         return None
-    return anthropic.Anthropic(api_key=key)
+    return anthropic.Anthropic(api_key=all_keys[index])
+
+
+def usable() -> bool:
+    """Is the model path usable at all? Cheap; no network."""
+    if not _keys.get_all("anthropic_api_key"):
+        return False
+    try:
+        import anthropic                          # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+class Truncated(RuntimeError):
+    """The budget ran out before the model wrote any prose."""
+
+
+def _call(client, prompt: str, system: str, max_tokens: int) -> str:
+    """
+    One request. Raises Truncated when the answer was cut off before any text.
+
+    Reasoning models spend part of the output budget thinking, and that
+    thinking is not returned as text. A budget sized for the answer alone comes
+    back empty with stop_reason "max_tokens" -- which looks exactly like a
+    refusal from the outside, and silently downgraded every written brief to a
+    scaffold until this was caught.
+    """
+    resp = client.messages.create(
+        model=MODEL, max_tokens=max_tokens, system=system,
+        messages=[{"role": "user", "content": prompt}])
+    text = "".join(getattr(b, "text", "") for b in resp.content
+                   if getattr(b, "type", "") == "text")
+    if not text.strip() and getattr(resp, "stop_reason", "") == "max_tokens":
+        raise Truncated(f"no text within {max_tokens} tokens")
+    return text
 
 
 def ask_model(prompt: str, system: str = BASE_CONTEXT,
               max_tokens: int = 2000, client=None) -> str | None:
-    """One model call. Returns None when no key or the call fails."""
-    client = client or _anthropic_client()
-    if client is None:
+    """
+    One model call, with key rotation.
+
+    The office holds more than one key. A revoked or throttled key must not be
+    the reason a brief comes back empty an hour before a hearing, so an auth or
+    rate error falls through to the next configured key. A bad *request* does
+    not rotate -- that is our bug, and trying it four more times only hides it.
+    """
+    def attempt(c) -> str | None:
+        """Call once; on a truncated answer, retry with room to think."""
+        budget = max(max_tokens, MIN_TOKENS)
+        for _ in range(2):
+            try:
+                return _call(c, prompt, system, budget)
+            except Truncated:
+                if budget >= MAX_TOKENS:
+                    return None
+                budget = min(MAX_TOKENS, budget * 3)
         return None
-    try:
-        resp = client.messages.create(
-            model=MODEL, max_tokens=max_tokens, system=system,
-            messages=[{"role": "user", "content": prompt}])
-        return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
-    except Exception as exc:                      # a dead key must not crash a brief
-        return f"[council unavailable: {type(exc).__name__}]"
+
+    if client is not None:
+        try:
+            return attempt(client)
+        except Exception as exc:
+            return f"[council unavailable: {type(exc).__name__}]"
+
+    n = max(1, len(_keys.get_all("anthropic_api_key")))
+    last = None
+    for index in range(n):
+        c = _anthropic_client(index)
+        if c is None:
+            break
+        try:
+            return attempt(c)
+        except Exception as exc:
+            last = type(exc).__name__
+            if last in ROTATE_ON and index + 1 < n:
+                continue                          # cold key; try the next one
+            break
+    return f"[council unavailable: {last}]" if last else None
 
 
 def council_plus(question: str, evidence: str, url: str | None = None) -> str | None:
@@ -305,11 +382,13 @@ def deliberate(question: str, evidence: str, seats: Iterable[Seat] = SEATS,
 def available() -> dict:
     """What the AI layer can actually do right now."""
     return {
-        "anthropic_key": bool(ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY")),
+        "anthropic_key": bool(_keys.get_all("anthropic_api_key")),
+        "keys_configured": len(_keys.get_all("anthropic_api_key")),
+        "key_source": _keys.status()["anthropic_api_key"]["source"],
         "sdk_installed": _sdk_installed(),
         "model": MODEL,
         "seats": [s.key for s in SEATS],
-        "mode": ("deliberated" if _anthropic_client() else "scaffold"),
+        "mode": ("deliberated" if usable() else "scaffold"),
     }
 
 

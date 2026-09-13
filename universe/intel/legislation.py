@@ -32,6 +32,23 @@ def _rows(store: Store, sql: str, params: Iterable = ()) -> list[dict]:
     return [dict(r) for r in store.q(sql, list(params))]
 
 
+def current_session(store: Store) -> str | None:
+    """
+    The Council session currently sitting.
+
+    `session` is stored as text, so MAX() sorts it lexically and answers '9'
+    for a corpus that runs through session 10. Every "what is live right now"
+    query depends on this, so it is compared numerically and returned in the
+    exact spelling the column uses.
+    """
+    rows = [r["session"] for r in store.q(
+        "SELECT DISTINCT session FROM matters WHERE session IS NOT NULL AND session<>''")]
+    numeric = [r for r in rows if str(r).strip().lstrip("-").isdigit()]
+    if numeric:
+        return max(numeric, key=lambda v: int(v))
+    return max(rows) if rows else None
+
+
 def resolve_member(store: Store, who: str | int) -> dict | None:
     """Find a member by id, last name, or full name."""
     if isinstance(who, int) or str(who).isdigit():

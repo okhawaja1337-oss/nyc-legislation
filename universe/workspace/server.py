@@ -35,9 +35,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from ..core.config import DATA_DIR, DISTRICT, MEMBER_NAME
+from ..core.config import CURRENT_FY, DATA_DIR, DISTRICT, MEMBER_NAME
 from ..core.store import Store
-from . import assistant, events, indexer, media, model, schema, search
+from ..live import watch
+from . import (assistant, breakdown, events, indexer, media, meeting, model,
+               schema, search)
+
+
+# Query-string keys that are options, not record filters. Everything else a
+# caller passes becomes a filter, so a new dimension needs no server change.
+_NOT_FILTERS = {"q", "by", "top", "order", "limit", "offset", "sort", "facets",
+                "rows", "cols", "measure", "t", "severity", "unacknowledged",
+                "days", "hours", "event", "id", "speaker", "kind_of"}
+
+
+def _filters(a: dict) -> dict:
+    out = {}
+    for key, value in a.items():
+        if key in _NOT_FILTERS or value in ("", None):
+            continue
+        out[key] = int(value) if str(value).lstrip("-").isdigit() else value
+    return out
 
 STATIC = Path(__file__).parent / "static"
 TOKEN_FILE = DATA_DIR / "workspace-token.txt"
@@ -268,6 +286,58 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT * FROM ws_views ORDER BY pinned DESC, created DESC")])
         if path == "/api/export":
             return self.export(s, a)
+
+        # ------------------------------------------------- breakdowns --
+        if path == "/api/breakdown":
+            return self.send(breakdown.break_by(
+                s, a.get("by", "member"), a.get("q", ""), _filters(a),
+                top=min(int(a.get("top", 25)), 200),
+                order=a.get("order", "amount")))
+        if path == "/api/breakdown/profile":
+            return self.send(breakdown.profile(s, a.get("q", ""), _filters(a)))
+        if path == "/api/breakdown/cross":
+            return self.send(breakdown.cross(
+                s, a.get("rows", "member"), a.get("cols", "fy"),
+                a.get("q", ""), _filters(a), measure=a.get("measure", "amount")))
+        if path == "/api/breakdown/dimensions":
+            return self.send(breakdown.dimensions())
+
+        # ----------------------------------------------------- changes --
+        if path == "/api/changes":
+            return self.send(watch.recent(
+                s, min(int(a.get("limit", 50)), 300), a.get("severity", ""),
+                a.get("kind", ""), a.get("unacknowledged", "") == "1"))
+        if path == "/api/changes/digest":
+            return self.send(watch.digest(s, int(a.get("hours", 168))))
+        if path == "/api/changes/status":
+            return self.send(watch.status(s))
+
+        # ----------------------------------------------------- meetings --
+        if path == "/api/meetings":
+            return self.send(meeting.upcoming(s, int(a.get("days", 21))))
+        if path == "/api/meetings/packets":
+            return self.send(meeting.saved(s, a.get("event", ""),
+                                           min(int(a.get("limit", 25)), 100)))
+        if path == "/api/meetings/packet":
+            got = meeting.read(s, a.get("id", ""))
+            return self.send(got) if got else self.fail("No such packet.", 404)
+
+        # --------------------------------------------------- connectors --
+        if path == "/api/connect/status":
+            from ..ai import council as ai_council
+            from ..connect import captions as cap
+            from ..connect import gsheets
+            from ..core import keys as K
+            return self.send({
+                "credentials": K.status(), "ai": ai_council.available(),
+                "sheets": gsheets.connections(s, "sheet"),
+                "calendar": s.get_meta("calendar.last_sync"),
+                "transcripts": cap.coverage(s)})
+        if path == "/api/quotes":
+            from ..connect import captions as cap
+            return self.send(cap.quotes(s, a.get("q", ""),
+                                        min(int(a.get("limit", 12)), 60),
+                                        a.get("speaker", "")))
         return self.fail("Unknown endpoint.", 404)
 
     def status(self, s: Store) -> dict:
@@ -407,6 +477,49 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/media/refresh":
             return self.send(self.server.start_job(
                 "Collecting media", lambda st: media.refresh_all(st)), 202)
+        if path == "/api/watch/scan":
+            return self.send(self.server.start_job(
+                "Scanning for changes",
+                lambda st: watch.scan(st, d.get("kinds"),
+                                      baseline=bool(d.get("baseline")))), 202)
+        if path == "/api/changes/ack":
+            ok = watch.acknowledge(s, d.get("id", ""), d.get("who") or "workspace")
+            return self.send({"acknowledged": ok})
+        if path == "/api/meetings/build":
+            row = s.one("SELECT * FROM calendar WHERE event_id=?",
+                        (d.get("event_id", ""),))
+            if not row:
+                return self.fail("No such calendar item.", 404)
+            event = dict(row)
+            event["packet_kind"] = meeting.classify(event)
+            event["committee"] = meeting.committee_of(event.get("summary") or "")
+            return self.send(self.server.start_job(
+                f"Preparing {event['summary'][:40]}",
+                lambda st: {"id": meeting.build(
+                    st, event, int(d.get("fy", CURRENT_FY)),
+                    use_ai=d.get("ai", True), actor=d.get("who", ""))["id"]}), 202)
+        if path == "/api/meetings/week":
+            return self.send(self.server.start_job(
+                "Preparing the week",
+                lambda st: meeting.week(st, int(d.get("days", 7)),
+                                        int(d.get("fy", CURRENT_FY)),
+                                        use_ai=bool(d.get("ai", True)))), 202)
+        if path == "/api/connect/sync":
+            what = d.get("what", "")
+            if what == "calendar":
+                from ..connect import gcal
+                return self.send(self.server.start_job(
+                    "Syncing the calendar", lambda st: gcal.sync(st)), 202)
+            if what == "sheets":
+                from ..connect import gsheets
+                return self.send(self.server.start_job(
+                    "Syncing the sheets", lambda st: gsheets.sync_all(st)), 202)
+            if what == "captions":
+                from ..connect import captions as cap
+                return self.send(self.server.start_job(
+                    "Fetching transcripts",
+                    lambda st: cap.pull_missing(st, int(d.get("limit", 25)))), 202)
+            return self.fail("Unknown connector.", 400)
         return self.fail("Unknown endpoint.", 404)
 
     # --------------------------------------------------------------- files --

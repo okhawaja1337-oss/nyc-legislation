@@ -234,6 +234,17 @@ universe assistant    ask a question or draft a deliverable
 universe media        the public record: hearings, video, news, press
 universe console      [--out PATH]
 universe sources      the citation registry
+
+universe connect key      status | set NAME [VALUE] [--append] | clear NAME
+universe connect calendar [--ics-url URL] [--file PATH] [--transport ...]
+universe connect sheets   [--list] [--file PATH --role ROLE]
+universe connect captions [--video URL] [--file PATH --media ID] [--coverage]
+universe connect status   what is connected, what answered, what is missing
+
+universe watch        scan | digest | list | ack --id ID | status
+universe breakdown    QUERY --by member|initiative|committee|agency|fy|tier
+                            [--cross DIM] [--profile] [--dimensions]
+universe meeting      list | week | packet [--match TITLE] | saved | read --id ID
 ```
 
 Deliverables are written to `out/universe/` as Markdown and JSON, and filed in
@@ -244,7 +255,7 @@ the lake with an id so they can be found and reused.
 ## Tests
 
 ```bash
-python3 -m universe.tests.test_universe
+python3 -m unittest discover -s universe/tests -t .
 ```
 
 The suite encodes the bugs found while building this: sponsorship indices that
@@ -252,8 +263,70 @@ are row positions rather than ids, duplicate Schedule C rows collapsing on a
 hash, a merged title row hijacking a header parse, an ingest that doubled its
 own tables when run twice, and FTS queries that crash on a bare quote.
 
+The connector suite adds the bugs found running this against live data: a
+model whose reasoning ate the token budget returned no text and every written
+brief silently degraded to a scaffold while reporting itself as written;
+`session` stored as text made `MAX()` answer '9' for a corpus running through
+session 10; a hearing's street address was parsed as part of its committee name
+and emptied the agenda with no error; breakdown parameters bound in the wrong
+order zeroed every total.
+
 Network-dependent feeds are asserted on the URLs they build, not on responses,
 so the suite passes on a plane.
+
+---
+
+## Connectors, changes and packets
+
+**Credentials never enter the repository.** They are read from the environment
+or from `~/.d49/config.json`, which is written with owner-only permissions.
+`universe connect key set` refuses to write anywhere inside the working tree,
+and `universe connect key status` reports where each credential came from and
+its last four characters -- enough to tell two keys apart, not enough to use
+one. More than one Anthropic key can be configured; a revoked or throttled key
+rotates to the next rather than emptying a brief an hour before a hearing.
+
+**The calendar** is read by whichever transport asks least of the user: a
+secret iCal address first (no OAuth, works on a private calendar), then the
+Calendar API with a token or key, then the public feed, then a file. When
+nothing answers, the result names every door it tried and what the server said.
+
+**The sheets** -- the MOCS tracker, the Staten Island rollup and the
+Transparency Resolution ledger -- come through the credential-free CSV export
+where the sheet allows it, and the Sheets API where it does not. Every path
+converges on the same ingesters, which already have tests; a connector does
+transport, never parsing. A sign-in page returned with a 200 is rejected rather
+than loaded as a budget book.
+
+**Transcripts** are what make a quote possible. Captions are pulled from
+YouTube's own endpoints, a captions provider, or a `.vtt` published next to
+hearing video, then parsed into timestamped cues. Every quote carries the
+second it was said and a link to it, and auto-generated captions are marked as
+such so a press secretary can decide before it reaches letterhead, not after.
+No transcript, no quote -- the system will summarise a video it cannot quote.
+
+**Change detection** fingerprints every watched record on each scan and reports
+what moved. The first scan is a baseline, not fifty thousand alerts. Severity
+is assigned by rules written down in `live/watch.py` where they can be argued
+with: a Transparency Resolution flipping a line to REVERSED is loud, because
+that is money an organisation has already been told it was getting; a typo in a
+recipient's name is not.
+
+**Breakdowns** cut any search by member, initiative, committee, agency, fiscal
+year, pillar or tier. Confirmed, pending and reversed money are reported
+separately and never summed into one headline, because announcing money a
+budget modification has not passed is the error this office cannot afford
+twice. Members are bucketed on a normalised key, so "HANKS" and "Hanks" are one
+Councilmember rather than two half-totals.
+
+**Meeting packets** turn the calendar into a work queue. Each hearing gets the
+committee's live docket ranked against the hearing subject, what District 49
+has riding on it, talking points, and questions. An oversight hearing gets the
+long form: an opening statement, six questions each with the follow-up ready
+for the answer the agency will actually give, a deflection playbook, and a
+closing. A deferred hearing gets nothing, because preparing for a meeting that
+was called off wastes a morning. The agenda always says how it was arrived at:
+it is inferred from the docket, never the published agenda, and it says so.
 
 ---
 
@@ -273,3 +346,10 @@ so the suite passes on a plane.
 - **Power BI.** The Council's dashboards render client-side and publish no
   JSON. Read the figure there and tie it out against Schedule C or Open Data
   before it enters a brief.
+- **Agendas are inferred.** Legistar publishes the real agenda; where it is
+  unreachable, a packet ranks the committee's live docket against the hearing
+  subject and labels itself as inferred. Confirm on Legistar before the room.
+- **Quotes need a transcript.** Where captions cannot be fetched, an item is
+  summarisable but not quotable, and `universe connect captions --coverage`
+  says which items those are. On a server, YouTube throttles caption requests
+  from datacentre addresses; a captions provider key is the reliable path.

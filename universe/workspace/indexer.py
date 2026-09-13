@@ -15,6 +15,7 @@ afterwards.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Iterable
 
 from ..core.config import PILLARS
@@ -31,6 +32,41 @@ def _pillar_label(key: str | None) -> str:
 
 def _clean(v: Any) -> str:
     return "" if v is None else str(v)
+
+
+# Titles and honorifics that are not part of a name. Left in, "Council Member
+# Hanks" and "Hanks" become two buckets that each hold half the money.
+_TITLES = ("council member", "councilmember", "council-member", "speaker",
+           "majority leader", "minority leader", "chair", "hon.", "the hon.")
+
+
+def person_key(name: Any) -> str:
+    """
+    A stable key for a person across books that spell them differently.
+
+    The Schedule C writes "HANKS", the Council Record writes "Kamillah Hanks",
+    the MOCS tracker writes "Hanks, Kamillah". Those are one Councilmember, and
+    a budget total that splits them is wrong in a way nobody notices until it
+    is on a slide.
+    """
+    raw = (str(name or "")).strip().lower()
+    if not raw:
+        return ""
+    # The books use parenthetical placeholders where no member applies --
+    # "(none -- non-City section)", "(citywide)". Those are not people, and a
+    # breakdown by member that invents a Councilmember called "section" is
+    # worse than one that leaves the money unattributed.
+    if raw.startswith("(") or "none" in raw or "n/a" in raw or raw in ("citywide", "various"):
+        return ""
+    for title in _TITLES:
+        if raw.startswith(title):
+            raw = raw[len(title):].strip()
+    if "," in raw:                      # "Hanks, Kamillah" -> "kamillah hanks"
+        surname, _, given = raw.partition(",")
+        raw = f"{given.strip()} {surname.strip()}".strip()
+    raw = re.sub(r"[^a-z\s'-]", " ", raw)
+    parts = [p for p in raw.split() if p not in ("jr", "sr", "ii", "iii", "iv")]
+    return parts[-1] if parts else ""
 
 
 # ------------------------------------------------------------- extractors --
@@ -50,6 +86,8 @@ def _matters(store) -> Iterable[dict]:
                 " ".join(_pillar_label(p) for p in pillars)])),
             "year": r["year"], "fy": None, "status": r["status"],
             "committee": r["committee"], "sponsor": r["prime_name"],
+            "sponsor_key": person_key(r["prime_name"]),
+            "initiative": "", "tier": "",
             "agency": "", "channel": r["type"], "district": None,
             "source_id": r["source_id"] or "LEGISTAR",
             "url": (f"https://legistar.council.nyc.gov/LegislationDetail.aspx"
@@ -76,7 +114,10 @@ def _funding(store) -> Iterable[dict]:
                 r["org"], r["pot"], r["purpose"], r["agency"], r["member"],
                 r["program"], r["section"], r["ein"], r["status"]])),
             "year": r["fy"], "fy": r["fy"], "status": r["status"],
-            "committee": "", "sponsor": r["member"], "agency": r["agency"],
+            "committee": "", "sponsor": r["member"],
+            "sponsor_key": person_key(r["member"]),
+            "initiative": _clean(r["pot"]), "tier": _clean(r["tier"]),
+            "agency": r["agency"],
             "channel": r["channel"], "district": r["district"],
             "source_id": r["source_id"], "url": "",
             "updated": r["updated"] or "", "amount": r["amount"],
@@ -97,7 +138,9 @@ def _orgs(store) -> Iterable[dict]:
             "body": " ".join(filter(None, [r["name"], r["ein"], r["borough"],
                                            r["zip"], r["pillars"]])),
             "year": r["last_fy"], "fy": r["last_fy"], "status": "",
-            "committee": "", "sponsor": "", "agency": "", "channel": "",
+            "committee": "", "sponsor": "", "sponsor_key": "",
+            "initiative": "", "tier": "",
+            "agency": "", "channel": "",
             "district": 49 if r["in_d49"] else None, "source_id": "SCHEDULE_C",
             "url": (f"https://projects.propublica.org/nonprofits/search?q="
                     f"{(r['ein'] or '').replace('-', '')}" if r["ein"] else ""),
@@ -118,7 +161,9 @@ def _members(store) -> Iterable[dict]:
             "body": " ".join(filter(None, [r["name"], r["party"], r["borough"],
                                            r["leadership"], str(r["district"])])),
             "year": None, "fy": None, "status": r["party"], "committee": "",
-            "sponsor": r["name"], "agency": "", "channel": "",
+            "sponsor": r["name"], "sponsor_key": person_key(r["name"]),
+            "initiative": "", "tier": "",
+            "agency": "", "channel": "",
             "district": r["district"], "source_id": "COUNCIL_RECORD",
             "url": r["wiki"] or "", "updated": "", "amount": None,
             "org": "", "pillar": "", "ein": "",
@@ -230,7 +275,8 @@ SOURCES = {
     "deliverables": _deliverables, "media": _media, "tasks": _tasks,
 }
 
-COLUMNS = ("key", "kind", "entity_id", "title", "body", "year", "fy", "status",
+COLUMNS = ("initiative", "tier", "sponsor_key",
+           "key", "kind", "entity_id", "title", "body", "year", "fy", "status",
            "committee", "sponsor", "agency", "channel", "district",
            "source_id", "url", "updated", "amount", "org", "pillar", "ein",
            "detail")

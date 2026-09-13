@@ -341,6 +341,58 @@ def cmd_connect(a, store: Store) -> None:
             "transcripts": captions.coverage(store)}, raw=True)
 
 
+def cmd_directory(a, store: Store) -> None:
+    """The Staten Island contact directory, across every level of government."""
+    from .live import si_directory as SD
+    if a.action == "load":
+        _p(SD.load(store), raw=True); return
+    if a.action == "route":
+        got = SD.route(store, " ".join(a.query or []))
+        print(f"Who to call about: {got['problem']}\n")
+        for m in got["matches"]:
+            reach = m["phone"] or m["email"] or m["url"] or "no contact on file"
+            print(f"  {m['agency']} — {m['office']}")
+            print(f"    {reach}")
+            if m.get("person"):
+                print(f"    {m['title'] or 'contact'}: {m['person']}")
+            print(f"    confidence: {m['confidence']}  ·  matched on "
+                  f"{', '.join(m['matched_on'])}")
+            if m.get("note"):
+                print(f"    {m['note']}")
+            print()
+        if got.get("note"):
+            print(f"  ⚠ {got['note']}")
+        return
+    if a.action == "gaps":
+        got = SD.gaps(store)
+        print(f"{got['total']} contacts on file; "
+              f"{len(got['no_phone_or_email'])} with no phone or email, "
+              f"{len(got['unverified_people'])} people unconfirmed.\n")
+        for row in got["no_phone_or_email"]:
+            print(f"  no contact  {row['agency']} — {row['office']}")
+        for row in got["unverified_people"]:
+            print(f"  unconfirmed {row['person'] or '—'} ({row['office']})")
+        print(f"\n{got['how_to_close']}")
+        return
+    rows = SD.directory(store, a.level or "", " ".join(a.query or []),
+                        a.confidence or "")
+    level = None
+    for r in rows:
+        if r["level"] != level:
+            level = r["level"]
+            print(f"\n=== {level.replace('_', ' ').upper()}")
+        who = f"{r['person']} — " if r["person"] else ""
+        print(f"  {who}{r['title'] or r['office']}")
+        print(f"    {r['agency']} · {r['office']}")
+        if r["phone"]:
+            print(f"    tel {r['phone']}")
+        if r["email"]:
+            print(f"    {r['email']}")
+        if r["address"]:
+            print(f"    {r['address']} {r['zip'] or ''}".rstrip())
+        print(f"    [{r['confidence']}] {r['url'] or ''}")
+
+
 def cmd_watch(a, store: Store) -> None:
     """Change detection over the budget and the legislative record."""
     from .live import watch
@@ -568,6 +620,17 @@ def build_parser() -> argparse.ArgumentParser:
                     choices=["auto", "timedtext", "innertube", "provider", "sidecar"])
     cn_sub.add_parser("status", help="what is connected and what is not")
     cn.set_defaults(fn=cmd_connect)
+
+    dr = sub.add_parser("directory",
+                        help="Staten Island contacts at every level of government")
+    dr.add_argument("action", nargs="?",
+                    choices=["list", "load", "route", "gaps"], default="list")
+    dr.add_argument("query", nargs="*", help="a name, agency, or a problem to route")
+    dr.add_argument("--level",
+                    choices=["federal", "state", "city", "community_board",
+                             "nonprofit", "institution"])
+    dr.add_argument("--confidence", choices=["published", "listed", "unverified"])
+    dr.set_defaults(fn=cmd_directory)
 
     wt = sub.add_parser("watch", help="detect changes in the budget and legislation")
     wt.add_argument("action", nargs="?",

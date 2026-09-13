@@ -31,7 +31,7 @@ from ..connect import captions, gcal, gsheets
 from ..connect import ics as ics_reader
 from ..core import keys
 from ..core.store import Store
-from ..live import watch
+from ..live import si_directory, watch
 from ..workspace import breakdown, indexer, meeting, schema
 
 
@@ -415,6 +415,80 @@ class MeetingTests(unittest.TestCase):
         note = meeting._agenda_confidence([{"on_topic": True}, {"on_topic": False}])
         self.assertIn("Legistar", note)
         self.assertIn("Not the", note)
+
+
+# ----------------------------------------------------------- the directory ----
+class DirectoryTests(unittest.TestCase):
+    """
+    The contact directory's only real invariant: nothing in it is guessed.
+
+    A wrong phone number is worse than a blank one. A blank prompts a lookup;
+    a wrong number sends a constituent to the wrong agency and the office
+    never finds out it happened.
+    """
+
+    def test_every_record_says_where_it_came_from(self):
+        for row in si_directory.normalize(si_directory.ALL):
+            self.assertTrue(row["verified_at"], f"{row['office']} has no source")
+            self.assertIn(row["confidence"], ("published", "listed", "unverified"))
+
+    def test_a_named_person_with_a_phone_is_never_unverified(self):
+        """If we print a name next to a number, we stand behind both."""
+        for row in si_directory.normalize(si_directory.ALL):
+            if row["person"] and row["phone"]:
+                self.assertNotEqual(row["confidence"], "unverified",
+                                    f"{row['person']} has a phone but is unverified")
+
+    def test_the_most_called_desks_are_all_routable(self):
+        """A routing table missing HPD is not a routing table."""
+        with fresh() as store:
+            si_directory.load(store)
+            for problem in ("no heat and hot water", "older adult meals",
+                            "illegal conversion permits", "SNAP benefits",
+                            "pothole resurfacing", "illegal dumping"):
+                got = si_directory.route(store, problem)
+                self.assertTrue(got["matches"], f"nothing routes {problem!r}")
+
+    def test_routing_shows_what_it_matched_on(self):
+        """A ranked list a staffer cannot interrogate is one they stop trusting."""
+        with fresh() as store:
+            si_directory.load(store)
+            top = si_directory.route(store, "heat and hot water")["matches"][0]
+            self.assertTrue(top["matched_on"])
+
+    def test_an_unconfirmed_contact_carries_a_warning(self):
+        with fresh() as store:
+            si_directory.load(store)
+            got = si_directory.route(store, "sewer capacity stormwater")
+            if any(m["confidence"] != "published" for m in got["matches"]):
+                self.assertIn("confirmed", got["note"])
+
+    def test_gaps_lists_what_still_needs_looking_up(self):
+        with fresh() as store:
+            si_directory.load(store)
+            got = si_directory.gaps(store)
+            self.assertEqual(got["total"], len(si_directory.ALL))
+            self.assertIn("Green Book", got["how_to_close"])
+
+    def test_loading_twice_does_not_duplicate(self):
+        with fresh() as store:
+            si_directory.load(store)
+            first = store.scalar("SELECT COUNT(*) FROM contacts")
+            si_directory.load(store)
+            self.assertEqual(store.scalar("SELECT COUNT(*) FROM contacts"), first)
+
+    def test_loading_twice_does_not_duplicate_the_search_index(self):
+        """
+        index_many used to insert without clearing, so a second ingest of any
+        source doubled its search rows and every match came back twice. The
+        live calendar was carrying 719 rows for 345 events before this.
+        """
+        with fresh() as store:
+            si_directory.load(store)
+            si_directory.load(store)
+            rows = store.scalar(
+                "SELECT COUNT(*) FROM search WHERE entity_type='contact'")
+            self.assertEqual(rows, store.scalar("SELECT COUNT(*) FROM contacts"))
 
 
 # ------------------------------------------------------------- the session ----

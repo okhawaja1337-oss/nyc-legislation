@@ -195,13 +195,22 @@ CREATE TABLE IF NOT EXISTS contacts (
   phone         TEXT,
   address       TEXT,
   borough       TEXT,
-  district      INTEGER,
+  -- Text, not integer: a district is "49" in the Council, "NY-11" in Congress
+  -- and "AD-61" in the Assembly, and this table holds all three.
+  district      TEXT,
   zip           TEXT,
   service_area  TEXT,          -- what constituents call this office about
   parent        TEXT,
   url           TEXT,
   source_id     TEXT,
-  updated       TEXT
+  updated       TEXT,
+  -- Provenance. A contact nobody can trace is a contact nobody should dial on
+  -- the Councilmember's behalf. These are also in MIGRATIONS so a lake built
+  -- before them comes forward; declared here so a fresh one starts with them.
+  verified      TEXT,          -- the date it was last confirmed
+  verified_at   TEXT,          -- the published page it was read off
+  confidence    TEXT,          -- published | listed | unverified
+  note          TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_contacts_level    ON contacts(level);
 CREATE INDEX IF NOT EXISTS ix_contacts_district ON contacts(district);
@@ -276,6 +285,12 @@ class Store:
     MIGRATIONS: tuple[tuple[str, str, str], ...] = (
         ("funding", "tier", "TEXT"),
         ("funding", "reso", "TEXT"),
+        # Provenance on a contact. A phone number nobody can trace is a phone
+        # number nobody should dial on the Councilmember's behalf.
+        ("contacts", "verified", "TEXT"),      # the date it was last confirmed
+        ("contacts", "verified_at", "TEXT"),   # the published page it came from
+        ("contacts", "confidence", "TEXT"),    # published | listed | unverified
+        ("contacts", "note", "TEXT"),
     )
 
     def _migrate(self) -> None:
@@ -334,8 +349,21 @@ class Store:
             (entity_type, str(entity_id), title or "", body or "", tags or ""))
 
     def index_many(self, rows: Iterable[tuple]) -> int:
+        """
+        Index a batch, replacing any existing entry for each entity.
+
+        This clears first for the same reason ``index`` does. Without it a
+        second ingest of the same source silently doubles its search rows --
+        the calendar was carrying 719 rows for 345 events, and every match
+        came back twice.
+        """
         rows = list(rows)
+        if not rows:
+            return 0
         with self.tx() as c:
+            c.executemany(
+                "DELETE FROM search WHERE entity_type=? AND entity_id=?",
+                [(r[0], str(r[1])) for r in rows])
             c.executemany(
                 "INSERT INTO search (entity_type, entity_id, title, body, tags) "
                 "VALUES (?,?,?,?,?)", rows)

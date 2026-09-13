@@ -41,6 +41,18 @@ def prepare(store: Store, quiet: bool = False) -> dict:
     else:
         out["index"] = {"indexed": indexed, "note": "already built"}
 
+    # The change detector needs a baseline before it can report a change. Set
+    # it at first launch rather than on the office's first real scan, so that
+    # scan reports what actually moved instead of recording the world silently.
+    try:
+        from ..live import watch
+        watch.init(store)
+        if not (store.scalar("SELECT COUNT(*) FROM ws_watch_state") or 0):
+            say("Recording a baseline for change detection…")
+            out["watch"] = watch.scan(store, baseline=True)["counts"]
+    except Exception as exc:                 # never block the workspace opening
+        out["watch"] = {"skipped": type(exc).__name__}
+
     counts = store.counts()
     say(f"{indexed or out['index']['indexed']:,} searchable records · "
         f"{counts['funding']:,} funding lines · {counts['matters']:,} matters")

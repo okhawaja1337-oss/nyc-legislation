@@ -204,6 +204,44 @@ def cmd_feeds(a, store: Store) -> None:
         print(f"  {d['name'][:34]:36} {d['url'][:70]}")
 
 
+def cmd_workspace(a, store: Store) -> None:
+    from .workspace.launch import main as launch
+    store.close()          # the server opens its own connections per request
+    argv = ["--host", a.host, "--port", str(a.port)]
+    if a.db:
+        argv += ["--db", a.db]
+    if a.no_browser:
+        argv.append("--no-browser")
+    if a.reindex:
+        argv.append("--reindex")
+    if a.seed:
+        argv.append("--seed")
+    launch(argv)
+
+
+def cmd_index(a, store: Store) -> None:
+    from .workspace import indexer
+    _p(indexer.rebuild(store, a.only, progress=lambda m: print("  ", m)), raw=True)
+
+
+def cmd_ask(a, store: Store) -> None:
+    from .workspace import assistant
+    out = assistant.ask(store, " ".join(a.question), kind=a.kind,
+                        register=a.register, council=a.council)
+    print(out["body"] or out.get("why", ""))
+    if out.get("quotes"):
+        for q in out["quotes"]:
+            print(f'\n  "{q["text"]}"\n    — {q["source"]} {q.get("url") or ""}')
+
+
+def cmd_media(a, store: Store) -> None:
+    from .workspace import media
+    if a.collect:
+        _p(media.refresh_all(store), raw=True)
+    else:
+        _p(media.coverage(store), raw=True)
+
+
 def cmd_console(a, store: Store) -> None:
     from .web.build import build
     path = build(store, Path(a.out) if a.out else None)
@@ -288,6 +326,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     so = sub.add_parser("sources", help="the citation registry")
     so.set_defaults(fn=cmd_sources)
+
+    ws = sub.add_parser("workspace", help="start the office workspace (web app)")
+    ws.add_argument("--host", default="127.0.0.1")
+    ws.add_argument("--port", type=int, default=8749)
+    ws.add_argument("--no-browser", action="store_true")
+    ws.add_argument("--reindex", action="store_true")
+    ws.add_argument("--seed", action="store_true")
+    ws.set_defaults(fn=cmd_workspace)
+
+    ix2 = sub.add_parser("reindex", help="rebuild the workspace search index")
+    ix2.add_argument("--only", nargs="*", help="matters funding orgs members …")
+    ix2.set_defaults(fn=cmd_index)
+
+    ask = sub.add_parser("assistant", help="ask the assistant; drafts talking points, quotes, press")
+    ask.add_argument("question", nargs="+")
+    ask.add_argument("--kind", default="answer")
+    ask.add_argument("--register", default="measured")
+    ask.add_argument("--council", action="store_true")
+    ask.set_defaults(fn=cmd_ask)
+
+    md = sub.add_parser("media", help="the public record: hearings, video, press")
+    md.add_argument("--collect", action="store_true", help="pull every feed now")
+    md.set_defaults(fn=cmd_media)
     return p
 
 

@@ -404,6 +404,13 @@ class Store:
     def close(self) -> None:
         self.conn.close()
 
+    # Usable with `with`, so a short-lived connection always gets closed.
+    def __enter__(self) -> "Store":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
 
 # ------------------------------------------------------------- helpers ----
 def _enc(v: Any) -> Any:

@@ -26,6 +26,19 @@ rendered for whoever is about to walk into a room.
 
 ---
 
+## The workspace
+
+The office runs on a web workspace built on this corpus — Asana-shaped
+programs and projects, live updates over Server-Sent Events, sub-50ms search
+across 75,000 records, and an assistant that answers from the evidence. See
+[`workspace/README.md`](workspace/README.md).
+
+```bash
+python3 -m universe workspace        # or double-click START_WORKSPACE.cmd
+```
+
+---
+
 ## Quick start
 
 ```bash
@@ -215,6 +228,10 @@ universe index        [--official NAME] [--group council] [--methodology]
 universe refer        "no heat and hot water for a week"
 universe calendar     [--limit N]
 universe feeds        live connectivity and the dashboard register
+universe workspace    start the office workspace (programs, board, assistant)
+universe reindex      rebuild the workspace search index
+universe assistant    ask a question or draft a deliverable
+universe media        the public record: hearings, video, news, press
 universe console      [--out PATH]
 universe sources      the citation registry
 ```

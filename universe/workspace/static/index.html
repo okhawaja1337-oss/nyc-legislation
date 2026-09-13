@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>D49 Workspace</title>
+<link rel="stylesheet" href="/style.css">
+<script defer src="/app.js"></script>
+</head><body>
+
+<aside class="sidebar" id="sidebar">
+  <a class="brand" href="#home"><span class="mark">49</span>
+    <span>District 49<small>Council Member Hanks</small></span></a>
+
+  <button id="omni" class="omni">⌕ Search everything <kbd>/</kbd></button>
+
+  <nav aria-label="Workspace">
+    <a href="#home" data-nav="home">⌂ <span>Home</span></a>
+    <a href="#mywork" data-nav="mywork">☑ <span>My work</span><b class="pill" id="mywork-count"></b></a>
+    <a href="#inbox" data-nav="inbox">◉ <span>Inbox</span><b class="pill alert" id="inbox-count"></b></a>
+    <a href="#calendar" data-nav="calendar">▤ <span>Calendar</span></a>
+    <a href="#workload" data-nav="workload">☰ <span>Workload</span></a>
+  </nav>
+
+  <div class="nav-label">Programs <button id="add-program" class="tiny" title="New program">＋</button></div>
+  <div id="program-tree" class="tree"></div>
+
+  <div class="nav-label">Research</div>
+  <nav aria-label="Research">
+    <a href="#search" data-nav="search">⌕ <span>Search</span></a>
+    <a href="#assistant" data-nav="assistant">✷ <span>Assistant</span></a>
+    <a href="#media" data-nav="media">▶ <span>Media &amp; press</span></a>
+    <a href="#sources" data-nav="sources">◎ <span>Sources</span></a>
+  </nav>
+
+  <div class="sidebar-foot">
+    <span class="avatar" id="me-avatar">OK</span>
+    <div><select id="me" aria-label="Acting as"></select><small id="live-dot">connecting…</small></div>
+  </div>
+</aside>
+
+<div class="shell">
+  <header class="topbar">
+    <button id="menu" class="icon" aria-label="Menu">☰</button>
+    <span class="crumb" id="crumb">Home</span>
+    <div class="spacer"></div>
+    <span id="job" class="chip"></span>
+    <button class="btn" data-act="refresh">↻ Refresh sources</button>
+    <button class="btn primary" data-act="new-task">＋ Task</button>
+  </header>
+  <main id="main" tabindex="-1"><div class="loading">Loading workspace…</div></main>
+</div>
+
+<dialog id="drawer"><button class="close" data-act="close-drawer" aria-label="Close">×</button>
+  <div id="drawer-body"></div></dialog>
+
+<dialog id="palette"><input id="palette-input" placeholder="Search bills, funding, orgs, people, tasks…" autocomplete="off">
+  <div id="palette-results"></div>
+  <div class="palette-help">Try <code>kind:funding fy:2027 org:Snug</code> · <code>amount:&gt;50000</code> · <code>-kind:matter</code></div>
+</dialog>
+
+<dialog id="login"><form id="login-form">
+  <h2>Open the workspace</h2>
+  <p>Enter the access token printed by the launcher.</p>
+  <label>Access token<input type="password" id="token" required autocomplete="off"></label>
+  <button class="btn primary">Open</button></form></dialog>
+
+<div id="toast" role="status" aria-live="polite"></div>
+</body></html>

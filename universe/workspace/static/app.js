@@ -5,8 +5,32 @@
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+/*
+ * The access token, from the link or from last time.
+ *
+ * Staff are sent one URL with ?token= on the end. The token is stored and then
+ * stripped from the address bar, so it does not sit in browser history, get
+ * copied out of the URL bar into an email, or ride along in a Referer header
+ * to anything the page links to. After the first visit the link works without
+ * it, because the browser remembers.
+ */
+function firstToken() {
+  let stored = '';
+  try { stored = localStorage.getItem('d49tok') || ''; } catch (e) { /* private window */ }
+  const url = new URL(location.href);
+  const fromLink = url.searchParams.get('token') || url.searchParams.get('t') || '';
+  if (fromLink) {
+    try { localStorage.setItem('d49tok', fromLink); } catch (e) { /* ignore */ }
+    url.searchParams.delete('token');
+    url.searchParams.delete('t');
+    history.replaceState(null, '', url.pathname + url.search + url.hash);
+    return fromLink;
+  }
+  return stored;
+}
+
 const state = {
-  route: 'home', params: {}, token: localStorage.getItem('d49tok') || '',
+  route: 'home', params: {}, token: firstToken(),
   csrf: '', me: localStorage.getItem('d49me') || '', status: null,
   programs: [], people: [], cursor: 0, es: null, cache: {},
 };
@@ -144,7 +168,7 @@ function renderTree() {
 const TITLES = { home: 'Home', mywork: 'My work', inbox: 'Inbox', calendar: 'Calendar',
   workload: 'Workload', search: 'Search', assistant: 'Assistant', media: 'Media & press',
   sources: 'Sources', project: 'Project', meetings: 'Meetings', changes: 'What changed',
-  breakdown: 'Breakdowns', connections: 'Connections' };
+  breakdown: 'Breakdowns', connections: 'Connections', briefs: 'Run a brief' };
 
 async function route() {
   const [name, qs] = (location.hash.slice(1) || 'home').split('?');
@@ -703,6 +727,7 @@ function wire() {
   if (sf) sf.onsubmit = e => { e.preventDefault();
     location.hash = '#search?q=' + encodeURIComponent(sf.q.value); };
   const af = $('#ask-form'); if (af) af.onsubmit = onAsk;
+  const bf = $('#brief-form'); if (bf) bf.onsubmit = onBrief;
   const stf = $('#status-form'); if (stf) stf.onsubmit = onStatus;
   wireDrag();
 }
@@ -1131,6 +1156,25 @@ VIEWS.connections = async () => {
         is missing the item is summarisable but not quotable.</p></div>`;
 };
 
+async function onBrief(e) {
+  e.preventDefault();
+  const f = e.target;
+  const kind = f.kind.value;
+  const subject = (f[`sub_${kind}`]?.value || '').trim();
+  const note = $('#brief-status');
+  const btn = f.querySelector('button[type=submit]');
+  btn.disabled = true;
+  note.textContent = 'Assembling the evidence…';
+  try {
+    await api('/api/brief/run', { kind, subject, ask: f.ask.value.trim(),
+                                  council: f.council.checked });
+    note.textContent = 'Writing. It will appear below when the checks have run.';
+  } catch (err) {
+    note.textContent = err.message;
+    btn.disabled = false;
+  }
+}
+
 function fmtMoney(n) {
   const v = Number(n || 0);
   if (!v) return '$0';
@@ -1141,3 +1185,81 @@ function fmtMoney(n) {
   if (a >= 1e3) return `${sign}$${Math.round(a / 1e3)}K`;
   return `${sign}$${Math.round(a)}`;
 }
+
+
+/* ------------------------------------------------------ run a brief */
+const VERDICT_CLASS = { 'shippable': 'ok', 'shippable with notes': 'warn', 'blocked': 'alert' };
+
+VIEWS.briefs = async () => {
+  const [kinds, past] = await Promise.all([
+    api('/api/brief/kinds'), api('/api/pipeline/receipts?limit=20')]);
+
+  if (state.params.id) {
+    const got = await api('/api/pipeline/receipt?id=' + encodeURIComponent(state.params.id));
+    const r = got.receipt;
+    const stages = (r?.stages || []).map(st => `
+      <div class="stg ${st.passed ? 'ok' : 'bad'}">
+        <div class="row between"><strong>${esc(st.name)}</strong>
+          <span class="muted">${st.gates.filter(g => g.passed).length}/${st.gates.length} checks</span></div>
+        ${st.gates.filter(g => !g.passed).map(g =>
+          `<p class="muted">${g.severity === 'blocking' ? '✕' : '!'} ${esc(g.asks)} — ${esc(g.found)}</p>`).join('')}
+      </div>`).join('');
+    return head('Run a brief', got.subject || got.deliverable_id,
+        `${esc(got.kind)} brief · ${esc(got.status)}`)
+      + `<div class="card"><a class="btn tiny" href="#briefs">← All briefs</a></div>`
+      + (r ? `<div class="card"><p class="lead">${esc(r.why)}</p>
+          <div class="stages">${stages}</div>
+          <p class="note">Every stage names what it consumed and what it produced.
+          A blocking check that fails stops the brief from being filed.</p></div>` : '')
+      + `<div class="card doc">${md(got.body || '*The brief text is on disk under this id.*')}</div>`;
+  }
+
+  const options = kinds.map((k, i) => `
+    <label class="pick">
+      <input type="radio" name="kind" value="${esc(k.kind)}" ${i === 0 ? 'checked' : ''}>
+      <div><strong>${esc(k.label)}</strong><p class="muted">${esc(k.does)}</p>
+        <input class="sub" name="sub_${esc(k.kind)}" placeholder="${esc(k.placeholder)}"
+               aria-label="${esc(k.subject_label)}"></div>
+    </label>`).join('');
+
+  const rows = past.map(b => `
+    <tr>
+      <td class="nowrap"><a href="#briefs?id=${encodeURIComponent(b.deliverable_id)}">
+        ${esc(b.deliverable_id)}</a></td>
+      <td>${esc(b.subject || '')}<div class="muted">${esc(b.kind || '')}</div></td>
+      <td><span class="tag ${VERDICT_CLASS[b.verdict] || ''}">${esc(b.verdict || b.status)}</span></td>
+      <td class="muted">${esc((b.why || '').slice(0, 120))}</td>
+      <td class="nowrap muted">${esc((b.created || '').slice(0, 16).replace('T', ' '))}</td>
+    </tr>`).join('');
+
+  // The live stream re-renders this view whenever anything is written, which
+  // wiped the "writing…" message typed into the form. Read the running job
+  // from shell state instead, so progress survives a re-render.
+  const job = state.status?.job || {};
+  const running = job.status === 'Running' && /brief/i.test(job.name || '');
+
+  return head('Deliverables', 'Run a brief',
+      'Pick what you need. The evidence is assembled from the record first, and every check is run before it is filed.')
+    + (running ? `<div class="card banner"><strong>${esc(job.name)}</strong>
+        <p class="muted">Assembling the evidence, writing it, then running every check.
+        It appears below when it is done — you can leave this page.</p></div>` : '')
+    + `<div class="card">
+        <form id="brief-form">
+          <div class="picks">${options}</div>
+          <label class="fld"><span>What is the question? (optional, but it records who the answer is for)</span>
+            <input name="ask" placeholder="What is our FY27 position going into the Finance hearing?"></label>
+          <label class="chk"><input type="checkbox" name="council">
+            <span>Run the LLM Council — five perspectives argue it, then review each other. Slower.</span></label>
+          <div class="row gap">
+            <button class="btn primary" type="submit">Write the brief</button>
+            <span class="muted" id="brief-status"></span>
+          </div>
+        </form>
+        <p class="note">Nothing is invented. Every figure must appear in the evidence or be
+        flagged unverified, and a brief that fails a blocking check is saved as a draft rather
+        than filed.</p>
+      </div>`
+    + `<div class="card table-wrap"><h3>Briefs already written</h3><table class="grid">
+        <thead><tr><th>Id</th><th>Subject</th><th>Verdict</th><th>Why</th><th>When</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5">None yet.</td></tr>'}</tbody></table></div>`;
+};

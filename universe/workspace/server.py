@@ -49,6 +49,32 @@ _NOT_FILTERS = {"q", "by", "top", "order", "limit", "offset", "sort", "facets",
                 "days", "hours", "event", "id", "speaker", "kind_of"}
 
 
+def _run_brief(store: Store, kind: str, subject: str, ask: str,
+               council: bool, kw: dict) -> dict:
+    """
+    Run one brief through the whole contract and report the verdict.
+
+    The job returns the receipt's summary rather than the prose: whether it is
+    deliverable is the thing the person who pressed the button needs first, and
+    the brief itself is one click away under its id.
+    """
+    from ..ai import process as proc
+    made = proc.run(store, kind, subject, ask=ask or None,
+                    with_council=council, write=True, **kw)
+    receipt = made.receipt
+    return {
+        "deliverable_id": made.deliverable_id,
+        "kind": kind, "subject": made.subject,
+        "status": made.status,
+        "verdict": receipt.verdict() if receipt else "unknown",
+        "why": receipt.why() if receipt else "",
+        "blockers": [{"asks": g.asks, "found": g.found}
+                     for g in (receipt.blockers if receipt else [])],
+        "warnings": [{"asks": g.asks, "found": g.found}
+                     for g in (receipt.warnings if receipt else [])],
+    }
+
+
 def _filters(a: dict) -> dict:
     out = {}
     for key, value in a.items():
@@ -333,6 +359,28 @@ class Handler(BaseHTTPRequestHandler):
                 "sheets": gsheets.connections(s, "sheet"),
                 "calendar": s.get_meta("calendar.last_sync"),
                 "transcripts": cap.coverage(s)})
+        if path == "/api/brief/kinds":
+            from ..ai import process as proc
+            return self.send([
+                {"kind": "member",
+                 "label": "A Councilmember's record",
+                 "subject_label": "Which member?",
+                 "placeholder": "Hanks",
+                 "does": "Legislative record, funding portfolio, peer benchmark, "
+                         "coalition, concentration and equity."},
+                {"kind": "fiscal",
+                 "label": "The District 49 fiscal position",
+                 "subject_label": "Fiscal year (optional)",
+                 "placeholder": "2027",
+                 "does": "Discretionary totals, channel split, the Transparency "
+                         "Resolution ledger, citywide context."},
+                {"kind": "matter",
+                 "label": "One bill or resolution",
+                 "subject_label": "Legistar matter id",
+                 "placeholder": "77634",
+                 "does": "Sponsors, whip count, committee posture, and what it "
+                         "means for the North Shore."},
+            ])
         if path == "/api/pipeline":
             from ..core import pipeline as P
             return self.send({"contract": P.contract(),
@@ -534,6 +582,24 @@ class Handler(BaseHTTPRequestHandler):
                 lambda st: meeting.week(st, int(d.get("days", 7)),
                                         int(d.get("fy", CURRENT_FY)),
                                         use_ai=bool(d.get("ai", True)))), 202)
+        if path == "/api/brief/run":
+            from ..ai import process as proc
+            kind = (d.get("kind") or "").strip()
+            if kind not in proc.BUILDERS:
+                return self.fail(f"Unknown brief kind {kind!r}.", 400)
+            subject = (d.get("subject") or "").strip()
+            ask = (d.get("ask") or "").strip()
+            council = bool(d.get("council"))
+            if kind == "matter" and not subject.isdigit():
+                return self.fail("A bill brief needs the numeric Legistar "
+                                 "matter id, for example 77634.", 400)
+            kw = {}
+            if kind == "fiscal" and subject.isdigit():
+                kw["fy"] = int(subject)
+                subject = ""
+            return self.send(self.server.start_job(
+                f"Writing the {kind} brief",
+                lambda st: _run_brief(st, kind, subject, ask, council, kw)), 202)
         if path == "/api/connect/sync":
             what = d.get("what", "")
             if what == "calendar":

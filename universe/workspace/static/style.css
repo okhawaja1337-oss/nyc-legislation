@@ -217,3 +217,30 @@ dialog::backdrop{background:rgba(20,20,18,.42)}
 .doc blockquote{border-left:3px solid var(--gold);margin:10px 0;padding:2px 0 2px 13px;color:var(--ink2)}
 .doc hr{border:none;border-top:1px solid var(--line);margin:16px 0}
 .doc code{font-size:12px}
+
+/* ------------------------------------------------------- run a brief */
+.picks{display:grid;gap:.6rem;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));
+  margin-bottom:1rem}
+.pick{display:flex;gap:.7rem;align-items:flex-start;padding:.85rem .9rem;
+  border:1px solid var(--line);border-radius:var(--r);cursor:pointer;background:var(--surface2)}
+.pick:has(input:checked){border-color:var(--navy);background:var(--gold-soft)}
+.pick input[type=radio]{margin-top:.3rem;flex:none}
+.pick strong{display:block;font-size:.95rem}
+.pick p{font-size:.82rem;color:var(--ink2);margin:.15rem 0 .55rem;line-height:1.45}
+.pick .sub{width:100%;padding:.42rem .55rem;border:1px solid var(--line);border-radius:6px;
+  background:var(--surface);color:var(--ink);font:inherit;font-size:.9rem}
+.fld{display:block;margin-bottom:.85rem}
+.fld span{display:block;font-size:.85rem;color:var(--ink2);margin-bottom:.3rem}
+.fld input{width:100%;padding:.55rem .65rem;border:1px solid var(--line);border-radius:6px;
+  background:var(--surface);color:var(--ink);font:inherit}
+.chk{display:flex;gap:.55rem;align-items:flex-start;margin-bottom:1rem;font-size:.9rem;
+  color:var(--ink2)}
+.chk input{margin-top:.22rem;flex:none}
+.row.between{display:flex;justify-content:space-between;align-items:baseline;gap:.6rem}
+.stages{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);margin:1rem 0;
+  border-radius:var(--r);overflow:hidden}
+.stages .stg{background:var(--surface);padding:.7rem .85rem;border-left:3px solid var(--good)}
+.stages .stg.bad{border-left-color:var(--crit)}
+.stages .stg p{margin:.25rem 0 0;font-size:.85rem}
+.banner{border-left:3px solid var(--navy);background:var(--gold-soft)}
+.banner p{margin:.25rem 0 0;font-size:.88rem}

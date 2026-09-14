@@ -82,8 +82,8 @@ def slim(db: Path, keep_text_from: int = 2022) -> dict:
         row = conn.execute(
             "SELECT COUNT(*) FROM matter_text WHERE body != ''").fetchone()
         conn.execute(
-            "UPDATE matter_text SET body = '' WHERE CAST(matter_id AS INTEGER) "
-            "IN (SELECT matter_id FROM matters WHERE year < ?)",
+            "UPDATE matter_text SET body = '' WHERE matter_id IN "
+            "(SELECT matter_id FROM matters WHERE year < ?)",
             (keep_text_from,))
         after_rows = conn.execute(
             "SELECT COUNT(*) FROM matter_text WHERE body != ''").fetchone()

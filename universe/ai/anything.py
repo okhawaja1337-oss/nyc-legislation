@@ -81,7 +81,7 @@ def _matter_packet(store: Store, mid: str) -> dict:
     if not rows:
         return {"error": f"No matter {mid} in the corpus."}
     m = dict(rows[0])
-    text = store.q("SELECT * FROM matter_text WHERE CAST(matter_id AS INTEGER) = ?",
+    text = store.q("SELECT * FROM matter_text WHERE matter_id = ?",
                    (int(mid),))
     t = dict(text[0]) if text else {}
     sponsors = [dict(r) for r in store.q(

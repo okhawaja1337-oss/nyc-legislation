@@ -82,7 +82,7 @@ def _matters(store) -> Iterable[dict]:
                t.intro_date AS intro_date, t.last_modified AS mirror_modified
         FROM matters m
         LEFT JOIN members mb ON mb.person_id = m.prime_id
-        LEFT JOIN matter_text t ON CAST(t.matter_id AS INTEGER) = m.matter_id"""):
+        LEFT JOIN matter_text t ON t.matter_id = m.matter_id"""):
         pillars = json.loads(r["pillars"] or "[]")
         topics = json.loads(r["topics"] or "[]")
         file_no = r["file"] or ""
@@ -98,7 +98,14 @@ def _matters(store) -> Iterable[dict]:
                 r["committee"], r["status"],
                 r["prime_name"], " ".join(str(t) for t in topics),
                 " ".join(_pillar_label(p) for p in pillars),
-                r["summary"] or "", (r["full_text"] or "")[:6000]]))[:24000],
+                r["summary"] or "",
+                # The opening of a bill carries its substance -- "A Local Law
+                # to amend … in relation to X", then the first operative
+                # section. Indexing 6,000 characters of every bill took first
+                # launch from one minute to four and a half, for reach into
+                # deep sections that no search has ever needed. The summary,
+                # which is the Council's own description, is indexed in full.
+                (r["full_text"] or "")[:2500]]))[:9000],
             "year": r["year"], "fy": None, "status": r["status"],
             "committee": r["committee"], "sponsor": r["prime_name"],
             "sponsor_key": person_key(r["prime_name"]),
@@ -304,6 +311,23 @@ def rebuild(store, only: Iterable[str] | None = None,
     schema.apply(store.conn)
     wanted = list(only) if only else list(SOURCES)
     counts: dict[str, int] = {}
+    full = not only
+
+    if full:
+        # A full rebuild replaces every row, so deleting them one kind at a
+        # time is work thrown away. Worse, each per-kind DELETE against the
+        # FTS table is a row-by-row posting-list edit over tens of thousands
+        # of documents: that delete, not the inserts, was most of a four and a
+        # half minute first launch. Dropping the table is instant, and the
+        # definition is recreated from its own SQL so nothing can drift.
+        fts_sql = store.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'workspace_fts'"
+        ).fetchone()
+        with store.tx() as c:
+            c.execute("DELETE FROM workspace_records")
+            if fts_sql and fts_sql[0]:
+                c.execute("DROP TABLE workspace_fts")
+                c.execute(fts_sql[0])
 
     for name in wanted:
         extract = SOURCES.get(name)
@@ -318,11 +342,12 @@ def rebuild(store, only: Iterable[str] | None = None,
             continue
 
         with store.tx() as c:
-            c.execute("DELETE FROM workspace_fts WHERE key IN "
-                      "(SELECT key FROM workspace_records WHERE kind = ?)",
-                      (rows[0]["kind"],) if rows else ("__none__",))
-            c.execute("DELETE FROM workspace_records WHERE kind = ?",
-                      (rows[0]["kind"],) if rows else ("__none__",))
+            if not full:
+                c.execute("DELETE FROM workspace_fts WHERE key IN "
+                          "(SELECT key FROM workspace_records WHERE kind = ?)",
+                          (rows[0]["kind"],) if rows else ("__none__",))
+                c.execute("DELETE FROM workspace_records WHERE kind = ?",
+                          (rows[0]["kind"],) if rows else ("__none__",))
             for i in range(0, len(rows), BATCH):
                 chunk = rows[i:i + BATCH]
                 c.executemany(

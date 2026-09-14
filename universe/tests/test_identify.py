@@ -259,5 +259,50 @@ class TestBriefAnything(Base):
                 self.assertIn(sid, known, f"{sid} cited by {key}")
 
 
+class TestIndexJoins(Base):
+    """
+    The join that the search rebuild depends on must use an index.
+
+    matter_text.matter_id was declared TEXT while matters.matter_id is
+    INTEGER, so the join needed a CAST -- and a CAST on a join column makes
+    the index unusable. SQLite quietly scanned 83 MB of bill text once per
+    matter and the rebuild went from ten seconds to five and three-quarter
+    minutes. Nothing failed; it was simply slow, which is the kind of
+    regression that survives review and gets blamed on the data growing.
+    """
+
+    def test_the_two_matter_id_columns_are_the_same_type(self):
+        kinds = {}
+        for table in ("matters", "matter_text"):
+            for row in self.store.q(f"PRAGMA table_info({table})"):
+                if row["name"] == "matter_id":
+                    kinds[table] = row["type"].upper()
+        self.assertEqual(kinds["matters"], kinds["matter_text"],
+                         "a type mismatch here forces a CAST, and a CAST on a "
+                         "join column costs the index")
+
+    def test_the_indexer_join_uses_the_primary_key_rather_than_scanning(self):
+        plan = [r["detail"] for r in self.store.q("""
+            EXPLAIN QUERY PLAN
+            SELECT m.*, t.summary FROM matters m
+            LEFT JOIN matter_text t ON t.matter_id = m.matter_id""")]
+        joined = " ".join(plan)
+        self.assertIn("SEARCH t", joined, plan)
+        self.assertNotIn("SCAN t", joined, plan)
+
+    def test_no_query_in_the_package_casts_a_matter_id(self):
+        import re
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1]
+        offenders = []
+        for path in root.rglob("*.py"):
+            if "test_" in path.name:
+                continue
+            if re.search(r"CAST\s*\(\s*t?\.?matter_id", path.read_text(),
+                         re.I):
+                offenders.append(str(path.relative_to(root)))
+        self.assertEqual(offenders, [])
+
+
 if __name__ == "__main__":
     unittest.main()

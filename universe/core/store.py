@@ -259,7 +259,12 @@ CREATE TABLE IF NOT EXISTS sources (
 -- has never synced still has to answer "brief me this bill" without crashing,
 -- and a fresh install is exactly the state where that gets tried.
 CREATE TABLE IF NOT EXISTS matter_text (
-  matter_id     TEXT PRIMARY KEY,
+  -- INTEGER, matching matters.matter_id. Declaring it TEXT meant every join
+  -- needed a CAST, and a CAST on a join column makes the index unusable: the
+  -- search rebuild went from fifteen seconds to five and three-quarter
+  -- minutes, scanning 83 MB of bill text once per matter. Same identifier,
+  -- same type.
+  matter_id     INTEGER PRIMARY KEY,
   file          TEXT,
   title         TEXT,     -- the long legal title, not the short name
   summary       TEXT,     -- the Council's own plain-language summary

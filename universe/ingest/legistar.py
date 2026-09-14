@@ -229,7 +229,7 @@ def ingest(store: Store, root: Path | str, years: set[int] | None = None,
         if summary or body:
             counts["text"] += 1
         texts[mid] = (
-            str(mid), file_no, str(row.get("Title") or "").strip(), summary, body,
+            mid, file_no, str(row.get("Title") or "").strip(), summary, body,
             _date(row.get("IntroDate")), _date(row.get("AgendaDate")),
             _date(row.get("PassedDate")), _date(row.get("EnactmentDate")),
             str(row.get("Version") or "").strip(),
@@ -352,7 +352,7 @@ def trim_text(store: Store, keep_from: int = 2022) -> dict:
     before = store.q("SELECT COUNT(*) n FROM matter_text WHERE body != ''")[0]["n"]
     with store.tx() as c:
         c.execute(
-            "UPDATE matter_text SET body = '' WHERE CAST(matter_id AS INTEGER) IN "
+            "UPDATE matter_text SET body = '' WHERE matter_id IN "
             "(SELECT matter_id FROM matters WHERE year < ?)", (keep_from,))
     after = store.q("SELECT COUNT(*) n FROM matter_text WHERE body != ''")[0]["n"]
     store.set_meta("legistar.text_trimmed", {

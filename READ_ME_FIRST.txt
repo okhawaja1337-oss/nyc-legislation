@@ -13,9 +13,9 @@ Your browser opens by itself. That is the whole install.
 A black-and-white text window opens first. Ignore it — it looks alarming and
 is not. It is the engine running. Close it when you are finished.
 
-The first launch takes about a minute: it builds the search index over the
-whole record and takes a baseline for change detection. Every launch after
-that is instant. Let it finish.
+The first launch takes about ten seconds longer than the rest: it builds the
+search index over the whole record and takes a baseline for change detection.
+Let it finish.
 
 If nothing happens when you double-click, you probably do not have Python.
 Get it from python.org/downloads. On Windows, tick "Add Python to PATH" on

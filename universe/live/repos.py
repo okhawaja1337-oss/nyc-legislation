@@ -56,18 +56,26 @@ class Repo:
     """One source repository and what the office uses it for."""
 
     def __init__(self, key: str, url: str, purpose: str,
-                 subdirs: tuple[str, ...] = (), branch: str = ""):
+                 subdirs: tuple[str, ...] = (), branch: str = "",
+                 role: str = "data"):
         self.key = key
         self.url = url
         self.purpose = purpose
         self.subdirs = subdirs
         self.branch = branch
+        # "data" repositories are ingested. "code" repositories are tracked so
+        # the office knows which version it is running, and deliberately not
+        # walked: this system's own repository contains the lake it builds,
+        # and hashing a 144 MB output as though it were an input would be both
+        # slow and a lie about where the data came from.
+        self.role = role
 
     def path(self, root: Path | None = None) -> Path:
         return Path(root or DEFAULT_ROOT) / self.key
 
     def as_dict(self) -> dict:
-        return {"key": self.key, "url": self.url, "purpose": self.purpose}
+        return {"key": self.key, "url": self.url, "purpose": self.purpose,
+                "role": self.role}
 
 
 REPOS: dict[str, Repo] = {
@@ -82,8 +90,11 @@ REPOS: dict[str, Repo] = {
     "legislation": Repo(
         "legislation",
         "https://github.com/okhawaja1337-oss/nyc-legislation",
-        "The Council record and this system's own source.",
-        subdirs=("data", "sources"),
+        "This system's own code. Tracked so the office knows which version it "
+        "is running; not a data source -- the lake in it is this system's "
+        "output, and the legislative data upstream of it is the Legistar "
+        "mirror below.",
+        role="code",
     ),
     "legistar": Repo(
         "legistar",
@@ -328,10 +339,18 @@ def sync(store: Store, keys: Iterable[str] | None = None,
             out["repos"][key] = {"error": f"unknown repository '{key}'"}
             continue
         record: dict[str, Any] = {"purpose": repo.purpose, "url": repo.url}
-        record["fetch"] = fetch(repo, root) if pull else {
-            "ok": False, "action": "skipped",
-            "present": repo.path(root).exists(),
-            "detail": "pull not requested"}
+        if pull:
+            record["fetch"] = fetch(repo, root)
+        else:
+            # Still read HEAD. "Which commit am I running" is answerable from
+            # the clone on disk and does not need the network; reporting it as
+            # unknown because we skipped the pull is a needless blind spot.
+            got, rev = _git(["rev-parse", "--short", "HEAD"],
+                            cwd=repo.path(root))
+            record["fetch"] = {"ok": False, "action": "skipped",
+                               "present": repo.path(root).exists(),
+                               "head": rev if got else "",
+                               "detail": "pull not requested"}
         if not repo.path(root).exists():
             record["state"] = "absent"
             record["says"] = ("Never cloned, and this run could not reach "
@@ -339,8 +358,10 @@ def sync(store: Store, keys: Iterable[str] | None = None,
             out["repos"][key] = record
             continue
         record["state"] = "current" if record["fetch"].get("ok") else "on-disk"
-        record["manifest"] = manifest(store, repo, root)
-        record["load"] = ingest_changed(store, repo, root, force=force)
+        record["role"] = repo.role
+        if repo.role == "data":
+            record["manifest"] = manifest(store, repo, root)
+            record["load"] = ingest_changed(store, repo, root, force=force)
         record["says"] = _says(record)
         out["repos"][key] = record
 
@@ -351,6 +372,11 @@ def sync(store: Store, keys: Iterable[str] | None = None,
 
 def _says(record: dict) -> str:
     """One sentence a staffer can act on."""
+    if record.get("role") == "code":
+        head = record.get("fetch", {}).get("head") or "unknown"
+        return (f"Code, not data. Running {head}."
+                + ("" if record["state"] == "current"
+                   else " Could not reach GitHub to check for a newer version."))
     counts = record.get("manifest", {}).get("counts", {})
     moved = counts.get("new", 0) + counts.get("stale", 0)
     failed = record.get("load", {}).get("failed", {})
@@ -378,7 +404,8 @@ def status(store: Store) -> dict:
         entry = by_repo.setdefault(r["repo"], {
             "files": 0, "bytes": 0, "by_status": {}, "last_ingest": None,
             "purpose": REPOS[r["repo"]].purpose if r["repo"] in REPOS else "",
-            "url": REPOS[r["repo"]].url if r["repo"] in REPOS else ""})
+            "url": REPOS[r["repo"]].url if r["repo"] in REPOS else "",
+            "role": REPOS[r["repo"]].role if r["repo"] in REPOS else "data"})
         entry["files"] += r["n"]
         entry["bytes"] += r["b"] or 0
         entry["by_status"][r["status"]] = r["n"]
@@ -387,7 +414,7 @@ def status(store: Store) -> dict:
     for key, repo in REPOS.items():
         by_repo.setdefault(key, {
             "files": 0, "bytes": 0, "by_status": {}, "last_ingest": None,
-            "purpose": repo.purpose, "url": repo.url})
+            "purpose": repo.purpose, "url": repo.url, "role": repo.role})
         by_repo[key]["cloned"] = repo.path().exists()
     return {"last_sync": last.get("at"), "repos": by_repo,
             "root": str(DEFAULT_ROOT)}

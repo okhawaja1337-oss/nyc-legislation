@@ -338,6 +338,35 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/changes/status":
             return self.send(watch.status(s))
 
+        # ----------------------------------------------------- position --
+        if path == "/api/position":
+            from ..intel import ledger as L
+            return self.send(L.position(s, int(a.get("fy", 2027))))
+        if path == "/api/position/categories":
+            from ..intel import ledger as L
+            return self.send(L.categories(s))
+        if path == "/api/position/channels":
+            from ..intel import ledger as L
+            return self.send(L.channels(s))
+        if path == "/api/position/items":
+            from ..intel import ledger as L
+            return self.send(L.items(s, a.get("category") or None,
+                                     limit=min(int(a.get("limit", 300)), 600)))
+        if path == "/api/position/ties":
+            from ..intel import ledger as L
+            return self.send(L.tie_checks(s, a.get("book") or None))
+        if path == "/api/position/find":
+            from ..intel import ledger as L
+            q = (a.get("q") or "").strip()
+            if not q:
+                return self.fail("Give a keyword to look for.", 400)
+            return self.send(L.find(s, q, min(int(a.get("limit", 40)), 200)))
+
+        # -------------------------------------------------------- repos --
+        if path == "/api/repos":
+            from ..live import repos as R
+            return self.send({"status": R.status(s), "stale": R.stale(s)})
+
         # ----------------------------------------------------- meetings --
         if path == "/api/meetings":
             return self.send(meeting.upcoming(s, int(a.get("days", 21))))

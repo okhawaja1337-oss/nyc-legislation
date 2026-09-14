@@ -168,7 +168,8 @@ function renderTree() {
 const TITLES = { home: 'Home', mywork: 'My work', inbox: 'Inbox', calendar: 'Calendar',
   workload: 'Workload', search: 'Search', assistant: 'Assistant', media: 'Media & press',
   sources: 'Sources', project: 'Project', meetings: 'Meetings', changes: 'What changed',
-  breakdown: 'Breakdowns', connections: 'Connections', briefs: 'Run a brief' };
+  breakdown: 'Breakdowns', connections: 'Connections', briefs: 'Run a brief',
+  position: 'The district position', repos: 'Source repositories' };
 
 async function route() {
   const [name, qs] = (location.hash.slice(1) || 'home').split('?');
@@ -850,6 +851,21 @@ async function action(act, el) {
       return toast('Scanning the budget and the docket for changes…'); }
     if (act === 'week') { await api('/api/meetings/week', { days: state.params.days || 7 });
       return toast('Preparing every meeting in the window…'); }
+    if (act === 'position-find') {
+      const q = ($('#pos-q')?.value || '').trim();
+      const box = $('#pos-hits');
+      if (!q) { box.innerHTML = '<p class="muted">Type something to look for.</p>'; return; }
+      box.innerHTML = '<p class="muted">Looking…</p>';
+      const hits = await api('/api/position/find?q=' + encodeURIComponent(q));
+      box.innerHTML = hits.length
+        ? `<table class="grid"><thead><tr><th class="num">Amount</th><th>What</th>
+             <th>Kind</th><th>Where it is written</th></tr></thead><tbody>
+           ${hits.map(h => `<tr><td class="num">${fmtMoney(h.amount)}</td>
+             <td>${esc(h.label)}</td><td>${esc(h.kind)}</td>
+             <td class="muted">${esc(h.locator)}</td></tr>`).join('')}</tbody></table>`
+        : '<p class="muted">Nothing in the reconciliation mentions that.</p>';
+      return;
+    }
     if (act === 'breakdown-go') {
       const params = { ...state.params, q: $('#bd-q')?.value || '' };
       if (!params.q) delete params.q;
@@ -1262,4 +1278,123 @@ VIEWS.briefs = async () => {
     + `<div class="card table-wrap"><h3>Briefs already written</h3><table class="grid">
         <thead><tr><th>Id</th><th>Subject</th><th>Verdict</th><th>Why</th><th>When</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="5">None yet.</td></tr>'}</tbody></table></div>`;
+};
+
+/* --------------------------------------------------- the district position */
+/* Five true answers to five different questions, always shown together and
+   always with the question attached. The office's recurring public error is
+   not arithmetic -- it is quoting the $3.0M designation figure in a room that
+   is asking about the $35.9M the district actually got. */
+const tieBadge = t => t === true ? '<b class="pill good">ties ✓</b>'
+  : t === false ? '<b class="pill alert">does not tie</b>'
+    : '<b class="pill">no check</b>';
+
+VIEWS.position = async () => {
+  const fy = state.params.fy || '2027';
+  const [pos, cats, chans] = await Promise.all([
+    api('/api/position?fy=' + encodeURIComponent(fy)),
+    api('/api/position/categories'),
+    api('/api/position/channels')]);
+
+  const bases = pos.bases.map(b => b.amount == null
+    ? `<div class="card"><h3>${esc(b.question)}</h3>
+        <p class="warn-text">Not loaded — sync the budget repository.</p></div>`
+    : `<div class="card"><h3>${esc(b.question)} ${tieBadge(b.ties)}</h3>
+        <p class="n">${fmtMoney(b.amount)}</p>
+        <p class="muted">${b.lines ? num(b.lines) + ' lines · ' : ''}${esc(b.source || '')}</p>
+        <p class="note">${esc(b.caution)}</p></div>`).join('');
+
+  const catRows = cats.map(c => `<tr><td>${esc(c.category)}</td>
+    <td class="num">${fmtMoney(c.amount)}</td>
+    <td class="num">${c.share}%</td></tr>`).join('');
+  const chanRows = chans.map(c => `<tr><td>${esc(c.channel)}</td>
+    <td>${esc(c.section)}</td>
+    <td class="num">${fmtMoney(c.total)}</td></tr>`).join('');
+
+  const tc = pos.tie_checks || {};
+  const failing = (tc.failing || []).map(c =>
+    `<li class="alert-text"><strong>${esc(c.sheet)}</strong> — ${esc(c.check)}</li>`).join('');
+
+  return head('Money', `The district position — FY${esc(String(pos.fy))}`,
+      'Every defensible answer to "what did District 49 get", side by side. '
+      + 'Quoting one without its question is how an office contradicts itself in public.')
+    + `<div class="cards">${bases}</div>`
+    + `<div class="card"><h3>Reconciliation checks</h3>
+        <p>${tc.passing} of ${tc.total} passing. A tie-check is the row where the
+        office proved its workbook reproduces the City's printed book, page by
+        page. A figure standing on a sheet that ties has been checked against
+        the City's own document; one without a check is an assertion.</p>
+        ${failing ? `<ul>${failing}</ul>` : ''}
+        ${(pos.notes || []).map(n => `<p class="warn-text">${esc(n)}</p>`).join('')}</div>`
+    + `<div class="card table-wrap"><h3>By category — the itemised basis</h3>
+        <table class="grid"><thead><tr><th>Category</th>
+          <th class="num">Amount</th><th class="num">Share</th></tr></thead>
+        <tbody>${catRows || '<tr><td colspan="3">Not loaded.</td></tr>'}</tbody>
+        </table></div>`
+    + `<div class="card table-wrap"><h3>By channel — which door the money came through</h3>
+        <table class="grid"><thead><tr><th>Component</th>
+          <th>Section</th><th class="num">Amount</th></tr></thead>
+        <tbody>${chanRows || '<tr><td colspan="3">Not loaded.</td></tr>'}</tbody>
+        </table>
+        <p class="note">These components are non-overlapping and come from the
+        reconciliation's own decomposition, not from adding up the workbook.
+        The same $77,350,000 of capital is restated on eight different sheets —
+        that is what a reconciliation does — so summing across them would report
+        roughly eight times the island's real capital.</p></div>`
+    + `<div class="card"><h3>Find a figure</h3>
+        <div class="row gap wrap">
+          <input id="pos-q" class="grow" placeholder="Snug Harbor, St. George Theatre, an EIN…"
+                 value="${esc(state.params.q || '')}">
+          <button class="btn primary" data-act="position-find">Look it up</button>
+        </div>
+        <p class="muted">Searches every row of the reconciliation. Each hit names
+        the sheet and row it was read from, so any number can be walked back to
+        its cell.</p>
+        <div id="pos-hits"></div></div>`;
+};
+
+/* ----------------------------------------------------- source repositories */
+/* What the office has pulled from GitHub and how old it is. A file that moved
+   upstream and was never reloaded is the quiet failure this view makes loud. */
+VIEWS.repos = async () => {
+  const d = await api('/api/repos');
+  const st = d.status || {};
+
+  const cards = Object.entries(st.repos || {}).map(([key, r]) => {
+    const pills = Object.entries(r.by_status || {}).map(([k, v]) =>
+      `<b class="pill${k === 'stale' || k === 'failed' ? ' alert'
+        : k === 'new' ? ' warn' : ''}">${esc(k)} ${v}</b>`).join(' ');
+    return `<div class="card"><h3>${esc(key)}${r.cloned === false
+        ? ' <b class="pill alert">not cloned</b>' : ''}${r.role === 'code'
+        ? ' <b class="pill">code</b>' : ''}</h3>
+      <p class="muted"><a href="${esc(r.url)}" target="_blank" rel="noopener"
+         >${esc(r.url)}</a></p>
+      <p class="note">${esc(r.purpose)}</p>
+      <p class="muted">${r.role === 'code'
+        ? 'Tracked for its version, never ingested.'
+        : `${num(r.files)} files · ${(r.bytes / 1e6).toFixed(1)} MB · last loaded
+           ${r.last_ingest ? fmtFull(r.last_ingest) : 'never'}`}</p>
+      <p>${pills}</p></div>`;
+  }).join('');
+
+  const stale = (d.stale || []).map(f => `<tr><td>${esc(f.path)}</td>
+    <td>${esc(f.handler || '—')}</td>
+    <td class="${f.status === 'failed' ? 'alert-text' : 'warn-text'}">${esc(f.status)}</td>
+    <td class="muted">${f.ingested ? fmtFull(f.ingested) : 'never'}</td></tr>`).join('');
+
+  return head('Sources', 'Source repositories',
+      'Where the office’s data actually comes from, and how old it is.')
+    + `<div class="cards">${cards}</div>`
+    + `<div class="card table-wrap"><h3>Not loaded from current bytes</h3>
+        ${stale ? `<table class="grid"><thead><tr><th>File</th><th>Handler</th>
+            <th>State</th><th>Last loaded</th></tr></thead>
+            <tbody>${stale}</tbody></table>`
+          : '<p>Every handled file is loaded from its current bytes.</p>'}
+        <p class="note">Files are compared by content hash, never by timestamp.
+        A clone rewrites every timestamp, so an mtime check would report the
+        whole budget repository as changed on every single run — and a report
+        that cries wolf gets muted within a week.</p>
+        <p class="muted">To refresh, run <code>python3 -m universe repos sync</code>
+        in the terminal. It pulls both repositories and reloads whatever moved.</p>
+        </div>`;
 };

@@ -306,6 +306,50 @@ class TestPosition(Base):
         self.assertTrue(missing)
         self.assertTrue(pos["notes"])
 
+    def test_channels_are_not_summed_across_the_workbook(self):
+        """
+        The workbook restates the same $77,350,000 of capital on eight sheets,
+        because restating money from several angles is what a reconciliation
+        does. Grouping every line row by channel and summing reported $2.13
+        billion of capital for Staten Island -- eight times over -- and looked
+        entirely plausible on screen.
+        """
+        book = "FY27_SI_EIN_Census_and_Reconciliation_v3"
+        rows = [
+            # The decomposition sheet: non-overlapping components.
+            (book, L.GRAND_SHEET, "Hanks — 22 lines", 17750000.0, "line", 5),
+            (book, L.GRAND_SHEET, "Speaker (pure)", 26046000.0, "line", 6),
+            (book, L.GRAND_SHEET, "CAPITAL TOTAL", 43796000.0, "total", 7),
+            (book, L.GRAND_SHEET, "Citywide initiatives", 8341467.0, "line", 8),
+            (book, L.GRAND_SHEET, "EXPENSE TOTAL", 8341467.0, "total", 9),
+            # The same capital money, restated on three other sheets.
+            (book, "Capital — Allocator", "SI-SUBSTANTIVE", 43796000.0, "line", 2),
+            (book, "Capital — Category", "Cultural", 43796000.0, "line", 2),
+            (book, "§254 SI Capital", "CC0791", 43796000.0, "line", 2),
+        ]
+        with self.store.tx() as c:
+            c.executemany(
+                "INSERT INTO ledger (row_id, book, sheet, label, amount, kind, "
+                "row_no, channel) VALUES (?,?,?,?,?,?,?,'capital')",
+                [(f"r{i}", *r) for i, r in enumerate(rows)])
+        chans = L.channels(self.store, book)
+        total = sum(c["total"] for c in chans if c["section"] == "capital")
+        self.assertEqual(total, 43796000.0)
+        self.assertNotEqual(total, 43796000.0 * 4)
+        rec = L.channels_reconcile(self.store, book)
+        self.assertTrue(rec["capital"]["ties"])
+        self.assertTrue(rec["expense"]["ties"])
+
+    def test_every_channel_component_names_the_row_it_came_from(self):
+        book = "FY27_SI_EIN_Census_and_Reconciliation_v3"
+        with self.store.tx() as c:
+            c.execute(
+                "INSERT INTO ledger (row_id, book, sheet, label, amount, kind, "
+                "row_no) VALUES ('x',?,?,'Hanks — 22 lines',17750000,'line',5)",
+                (book, L.GRAND_SHEET))
+        got = L.channels(self.store, book)
+        self.assertTrue(got[0]["locator"].endswith("row 5"))
+
     def test_evidence_values_are_real_numbers_for_the_gate(self):
         values = L.evidence(self.store)["values"]
         self.assertIn(3008000, values)
@@ -395,6 +439,27 @@ class TestRepos(Base):
             self.assertIn("Could not reach GitHub", rec["says"])
         finally:
             R.REPOS.pop("_t", None)
+
+    def test_a_code_repository_is_tracked_but_never_ingested(self):
+        """
+        This system's own repository contains the lake it builds. Walking it
+        would hash a 144 MB output as though it were an input -- slow, and a
+        lie about where the data came from.
+        """
+        root = self.dir / "clone"
+        repo = R.Repo("_c", "https://example.invalid/c", "code", role="code")
+        (repo.path(root) / "data").mkdir(parents=True)
+        (repo.path(root) / "data" / "fy27_schedule_c.json").write_text("[]")
+        R.REPOS["_c"] = repo
+        try:
+            out = R.sync(self.store, ["_c"], root=root, pull=False)
+            rec = out["repos"]["_c"]
+            self.assertNotIn("manifest", rec)
+            self.assertIn("Code, not data", rec["says"])
+            self.assertEqual(
+                self.store.q("SELECT COUNT(*) n FROM repo_files")[0]["n"], 0)
+        finally:
+            R.REPOS.pop("_c", None)
 
     def test_one_failing_book_does_not_abort_the_others(self):
         root = self.dir / "clone"

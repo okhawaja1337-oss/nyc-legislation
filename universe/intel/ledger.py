@@ -226,15 +226,68 @@ def position(store: Store, fy: int = 2027) -> dict:
     return out
 
 
+# The one sheet that decomposes the island's total into non-overlapping
+# components. Everything else in the workbook restates the same money from a
+# different angle, which is what a reconciliation is for.
+GRAND_SHEET = "Grand Total — Combined (Jul 7)"
+SECTION_TOTALS = {"CAPITAL TOTAL": "capital", "EXPENSE TOTAL": "expense"}
+
+
 def channels(store: Store, book: str = "FY27_SI_EIN_Census_and_Reconciliation_v3",
              fy: int = 2027) -> list[dict]:
-    """How the money reached the island, by door."""
+    """
+    How the money reached the island, by door.
+
+    Read from the reconciliation's own decomposition, never aggregated across
+    the workbook. Grouping every line row by channel and summing looks like
+    the obvious implementation and is catastrophically wrong: the workbook
+    states the same $77,350,000 of capital on eight different sheets -- the
+    §254 detail, the allocator, the category cut, the sponsor cut, the named
+    wins, the corrected totals -- because restating money from several angles
+    is exactly what a reconciliation does. Summing across them reported
+    $2.13 billion of capital for Staten Island, roughly eight times over, and
+    it appeared on screen looking perfectly plausible.
+
+    So: the components come from one sheet, and the result is checked against
+    that sheet's own totals before it is handed back.
+    """
     rows = store.q(
-        "SELECT channel, COUNT(*) lines, SUM(amount) total FROM ledger "
-        "WHERE book = ? AND kind = 'line' AND amount IS NOT NULL "
-        "AND channel IS NOT NULL GROUP BY channel ORDER BY total DESC",
-        (book,))
-    return [dict(r) for r in rows]
+        "SELECT label, amount, kind, row_no FROM ledger "
+        "WHERE book = ? AND sheet = ? AND amount IS NOT NULL "
+        "ORDER BY row_no", (book, GRAND_SHEET))
+    out: list[dict] = []
+    section = "capital"
+    for r in rows:
+        label = (r["label"] or "").strip()
+        if label in SECTION_TOTALS:
+            # The section total closes the section it totals; the next
+            # components belong to whatever comes after it.
+            section = "expense" if SECTION_TOTALS[label] == "capital" else None
+            continue
+        if r["kind"] != "line" or section is None:
+            continue
+        out.append({"channel": label, "section": section,
+                    "total": r["amount"],
+                    "locator": f"{book} · {GRAND_SHEET} · row {r['row_no']}"})
+    return out
+
+
+def channels_reconcile(store: Store,
+                       book: str = "FY27_SI_EIN_Census_and_Reconciliation_v3"
+                       ) -> dict:
+    """Do the components add up to the sheet's own stated totals?"""
+    comps = channels(store, book)
+    stated = {r["label"]: r["amount"] for r in store.q(
+        "SELECT label, amount FROM ledger WHERE book = ? AND sheet = ? "
+        "AND kind = 'total'", (book, GRAND_SHEET))}
+    out = {}
+    for label, key in SECTION_TOTALS.items():
+        got = round(sum(c["total"] or 0 for c in comps
+                        if c["section"] == key), 2)
+        want = stated.get(label)
+        out[key] = {"components": got, "stated": want,
+                    "ties": want is not None and round(want, 2) == got}
+    return out
 
 
 def categories(store: Store,

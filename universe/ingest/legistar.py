@@ -233,12 +233,18 @@ def ingest(store: Store, root: Path | str, years: set[int] | None = None,
             _date(row.get("IntroDate")), _date(row.get("AgendaDate")),
             _date(row.get("PassedDate")), _date(row.get("EnactmentDate")),
             str(row.get("Version") or "").strip(),
+            # Name and link only, and at most eight. The full attachment
+            # blocks are 22 MB across the corpus -- more than the bill text --
+            # and nothing reads past the first few.
             json.dumps([{"name": a.get("Name"), "link": a.get("Link")}
-                        for a in (row.get("Attachments") or [])],
+                        for a in (row.get("Attachments") or [])[:8]],
                        ensure_ascii=False),
+            # The last twelve actions. A bill's full history runs to
+            # hundreds of committee-laid-over entries and nothing reads past
+            # the recent ones.
             json.dumps([{"date": _date(h.get("Date")), "action": h.get("Action"),
                          "body": h.get("BodyName")}
-                        for h in (row.get("History") or [])],
+                        for h in (row.get("History") or [])[-12:]],
                        ensure_ascii=False),
             modified, "LEGISTAR_MIRROR",
             f"https://legistar.council.nyc.gov/LegislationDetail.aspx?ID={mid}")
@@ -329,6 +335,32 @@ def _write(store: Store, matters: list[tuple], texts: list[tuple],
                 "VALUES (?,?,?)", sponsors)
 
 
+def trim_text(store: Store, keep_from: int = 2022) -> dict:
+    """
+    Drop bill text older than a session, keeping every summary.
+
+    The full text of 21,627 matters is 77 MB; the summaries are 3.6 MB. For a
+    package the office downloads, that is the difference between a minute and
+    ten. The text of a 1999 bill is almost never searched, and when it is,
+    `universe repos sync --force` brings it back.
+
+    Summaries are never dropped. They are what makes a bill findable by what
+    it does rather than by its truncated name, they cost almost nothing, and
+    an office that cannot read a summary has lost the thing this data was
+    loaded for.
+    """
+    before = store.q("SELECT COUNT(*) n FROM matter_text WHERE body != ''")[0]["n"]
+    with store.tx() as c:
+        c.execute(
+            "UPDATE matter_text SET body = '' WHERE CAST(matter_id AS INTEGER) IN "
+            "(SELECT matter_id FROM matters WHERE year < ?)", (keep_from,))
+    after = store.q("SELECT COUNT(*) n FROM matter_text WHERE body != ''")[0]["n"]
+    store.set_meta("legistar.text_trimmed", {
+        "keep_from": keep_from, "dropped": before - after, "kept": after,
+        "restore": "universe repos sync --repo legistar --force"})
+    return {"dropped": before - after, "kept": after, "keep_from": keep_from}
+
+
 def coverage(store: Store) -> dict:
     """What the mirror has given us, and how fresh it is."""
     last = store.get_meta("legistar.last_ingest") or {}
@@ -340,8 +372,18 @@ def coverage(store: Store) -> dict:
     except Exception:                                   # noqa: BLE001
         totals = {"rows": 0, "summaries": 0, "texts": 0, "newest": None}
     matters = store.q("SELECT COUNT(*) n FROM matters")[0]["n"]
+    trimmed = store.get_meta("legistar.text_trimmed") or {}
     return {"matters": matters, "with_text": totals,
             "last_ingest": last.get("at"),
             "high_water": last.get("high_water"),
+            "text_trimmed": trimmed or None,
+            "says": (
+                f"Full bill text is loaded for sessions from "
+                f"{trimmed['keep_from']} onward. Older text was left out of "
+                f"this package to keep it small — every summary is here, and "
+                f"`{trimmed['restore']}` brings the rest back."
+                if trimmed else
+                f"{totals['texts'] or 0:,} of {matters:,} matters carry their "
+                f"full text."),
             "share_with_summary": (round(100 * (totals["summaries"] or 0)
                                          / matters, 1) if matters else 0)}

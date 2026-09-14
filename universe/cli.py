@@ -473,6 +473,27 @@ def cmd_watch(a, store: Store) -> None:
         _p(watch.status(store), raw=True)
 
 
+def cmd_package(a, store: Store) -> None:
+    """Build the copy the office downloads."""
+    from .core import package as PK
+    if a.what == "contents":
+        for k, v in PK.contents().items():
+            print(f"  {k:<16} {v:,}")
+        return
+    print("Building… this takes a minute.")
+    out = PK.build(a.out, keep_text_from=a.keep_text_from)
+    s = out["slimmed"]
+    print(f"\n  {out['zip']} — {out['mb']} MB")
+    print(f"  lake {s['before_mb']} MB -> {s['after_mb']} MB "
+          f"(saved {s['saved_mb']} MB)")
+    print(f"  cleared: {', '.join(s['cleared'])}")
+    print(f"  bill text dropped for {s['text_rows_dropped']:,} older matters "
+          f"— summaries kept, text restorable with "
+          f"`universe repos sync --repo legistar --force`")
+    if out["missing_launchers"]:
+        print(f"  ! missing launchers: {', '.join(out['missing_launchers'])}")
+
+
 def cmd_repos(a, store: Store) -> None:
     """The source repositories on GitHub: what is here, and how old it is."""
     from .live import repos as R
@@ -842,6 +863,16 @@ def build_parser() -> argparse.ArgumentParser:
     mt.add_argument("--limit", type=int, default=12)
     mt.add_argument("--no-ai", action="store_true", help="evidence only, no prose")
     mt.set_defaults(fn=cmd_meeting)
+
+    pk = sub.add_parser("package",
+                        help="build the zip the office downloads")
+    pk.add_argument("what", nargs="?", choices=["build", "contents"],
+                    default="build")
+    pk.add_argument("--out", default="D49-Universe.zip")
+    pk.add_argument("--keep-text-from", type=int, default=2022,
+                    help="keep full bill text from this session onward "
+                         "(0 keeps everything)")
+    pk.set_defaults(fn=cmd_package)
 
     rp = sub.add_parser("repos",
                         help="the source repositories on GitHub, kept live")

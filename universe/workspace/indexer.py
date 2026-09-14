@@ -365,3 +365,34 @@ def coverage(store) -> list[dict]:
         "SELECT kind, COUNT(*) AS n, MIN(fy) AS first_fy, MAX(fy) AS last_fy, "
         "SUM(CASE WHEN amount IS NOT NULL THEN amount ELSE 0 END) AS total "
         "FROM workspace_records GROUP BY kind ORDER BY n DESC")]
+
+
+def clear(store) -> dict:
+    """
+    Empty the search index and actually reclaim the space.
+
+    DELETE FROM an FTS5 table leaves its shadow tables behind -- 81 MB of them
+    on this corpus, which then travels inside every package the office
+    downloads for an index that is rebuilt on first launch anyway. FTS5 has a
+    command for this and it is not DELETE.
+    """
+    freed = []
+    for table in ("workspace_fts", "search"):
+        try:
+            store.conn.execute(
+                f"INSERT INTO {table}({table}) VALUES('delete-all')")
+            freed.append(table)
+        except Exception:                                # noqa: BLE001
+            try:
+                store.conn.execute(f"DELETE FROM {table}")
+                freed.append(table + " (delete)")
+            except Exception:                            # noqa: BLE001
+                pass
+    for table in ("workspace_records", "ws_watch_state"):
+        try:
+            store.conn.execute(f"DELETE FROM {table}")
+            freed.append(table)
+        except Exception:                                # noqa: BLE001
+            pass
+    store.conn.commit()
+    return {"cleared": freed}

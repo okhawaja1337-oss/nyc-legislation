@@ -6,3 +6,15 @@ __pycache__/
 legistar_state.db
 .appstate/
 .DS_Store
+
+# Universe: the lake and everything generated from it
+data/universe/
+out/universe/
+out/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Local credentials. Never committed; see universe/core/keys.py.
+.d49-local.json
+.d49/

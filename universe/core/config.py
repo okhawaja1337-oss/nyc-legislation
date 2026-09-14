@@ -191,13 +191,31 @@ HOUSE_STYLE = {
 
 # ---------------------------------------------------- provenance tiers ----
 # How much weight a fact carries. Used by the citation registry.
+# How much weight a source carries, lowest number first. The academic tiers
+# are kept apart on purpose. A peer-reviewed article has been through
+# referees; an NBER or IZA working paper has not, and working papers are the
+# workhorse of policy economics -- most of what gets cited in a budget hearing
+# as "the research shows" is a working paper. Collapsing the two would let the
+# office cite an unrefereed result with the authority of a refereed one, which
+# is precisely the error that gets a Councilmember corrected in public.
 PROVENANCE = {
-    "OFFICIAL_PRIMARY": 1,   # Legistar, Schedule C PDF, Charter, OMB publication
-    "OFFICIAL_DERIVED": 2,   # NYC Open Data, Checkbook, Comptroller report
-    "INSTITUTIONAL": 3,      # IBO, CBC, academic, Federal Reserve
-    "PRESS": 4,              # newspapers, trade press
-    "INTERNAL": 5,           # office spreadsheets, staff notes
-    "DELIBERATIVE": 6,       # model output, forecasts -- internal only
+    "OFFICIAL_PRIMARY": 1,     # the City's own book, the statute, the roll call
+    "PEER_REVIEWED": 2,        # refereed journal article
+    "OFFICIAL_DERIVED": 2,     # a faithful mirror or parse of a primary source
+    "INSTITUTIONAL": 3,        # IBO, Comptroller, a think tank, a university centre
+    "WORKING_PAPER": 4,        # NBER, IZA, SSRN -- not refereed, say so when citing
+    "MARKET": 4,               # rating agencies, EMMA disclosure, bank research
+    "PRESS": 5,
+    "INTERNAL": 6,
+    "DELIBERATIVE": 7,
+}
+
+# Tiers that must carry a caveat when a brief leans on them.
+NEEDS_CAVEAT = {
+    "WORKING_PAPER": "not peer reviewed",
+    "PRESS": "press reporting, not a primary source",
+    "DELIBERATIVE": "deliberative — the office's own reasoning, not evidence",
+    "MARKET": "market or rating-agency research, which has a seller",
 }
 
 # ------------------------------------------------------------ live feeds ----

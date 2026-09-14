@@ -185,6 +185,17 @@ def _ledger_packet(store: Store, row_id: str) -> dict:
     }
 
 
+def _signon_packet(store: Store, matter_id: str) -> dict:
+    """Everything the sign-on decision rests on, for one bill."""
+    from ..intel import law, signon
+    got = signon.assess(store, int(matter_id))
+    if "error" in got:
+        return got
+    got["law_detail"] = law.for_matter(store, int(matter_id))
+    got["sources"] = ["LEGISTAR_MIRROR", "COUNCIL_RECORD"]
+    return got
+
+
 def _fy_packet(store: Store, year: str) -> dict:
     from ..intel import funding as FI
     from ..intel import ledger as LG
@@ -200,6 +211,7 @@ def _fy_packet(store: Store, year: str) -> dict:
 
 
 PACKETS = {
+    "signon": _signon_packet,
     "matter": _matter_packet,
     "funding": _funding_packet,
     "org": _org_packet,
@@ -444,6 +456,69 @@ def _ledger_brief(store: Store, ev: dict) -> Brief:
             "caveat above?"])
 
 
+# What the office actually sends, by verdict. A recommendation that stops at
+# "sign" leaves the staffer to work out what signing means this week.
+NEXT_STEP = {
+    "SIGN": "Add her name in Legistar, then tell the prime sponsor's office "
+            "so the borough position is on the record before the hearing.",
+    "WATCH": "Hold the name. Put it on the committee-watch list and revisit "
+             "when it is calendared or when the reasons against are resolved.",
+    "DECLINE": "No action. If the policy still matters, the move is a "
+               "different bill, not this one.",
+    "LETTER": "A letter of support to the committee chair and the prime "
+              "sponsor, copied to the Staten Island delegation.",
+    "ALREADY": "Nothing to do — confirm the sponsorship is showing in "
+               "Legistar and move on.",
+}
+
+
+def _signon_brief(store: Store, ev: dict) -> Brief:
+    """
+    The sign-on decision, in the shape the Councilmember reads.
+
+    The verdict leads, because that is the question. The reasoning follows in
+    full, because a recommendation whose reasoning is hidden gets ignored the
+    first time it is wrong — and this one will be wrong sometimes.
+    """
+    verdict = ev["verdict"]
+    bottom = (f"**{verdict}** — {ev['headline']} {ev['file']} is "
+              f"{ev['status'].lower()} in the Committee on {ev['committee']}, "
+              f"with {ev['n_sponsors']} sponsor(s); prime sponsor "
+              f"{ev['prime']}.")
+    details = list(ev["for"]) + [f"Against: {r}" for r in ev["against"]]
+    if ev.get("law_detail", {}).get("amends"):
+        details.append("Amends " + ", ".join(
+            f"§ {x['section']}" for x in ev["law_detail"]["amends"][:4]) + ".")
+    if ev.get("precedent"):
+        details.append(ev["precedent"]["says"])
+
+    impact = []
+    if ev.get("si_sponsors"):
+        impact.append(f"Staten Island is on it: {', '.join(ev['si_sponsors'])}. "
+                      f"District {DISTRICT} is not, and that asymmetry is "
+                      f"visible to the delegation.")
+    else:
+        impact.append(f"No Staten Island sponsor. Signing puts the borough on "
+                      f"the record first, which is worth more than the "
+                      f"twenty-sixth signature on a bill that already has "
+                      f"twenty-five.")
+    impact.append(NEXT_STEP.get(verdict, ""))
+
+    return Brief(
+        subject=f"{ev['file']} — sign-on decision", kind="Sign-on brief",
+        bottom_line=bottom, details=[d for d in details if d],
+        d49_impact=[i for i in impact if i],
+        recommendation=NEXT_STEP.get(verdict, ""),
+        questions=[
+            f"Does this reach the North Shore, or is it citywide with no "
+            f"District {DISTRICT} effect?",
+            "Is there an implementation cost to a borough with one hospital "
+            "system and no subway that the sponsor has not accounted for?",
+            ("Is the prime sponsor someone we want to be owed by?"
+             if verdict == "SIGN" else
+             "What would have to change for this to become a sign?")])
+
+
 def _fy_brief(store: Store, ev: dict) -> Brief:
     pos = ev.get("position", {})
     bases = {b["key"]: b for b in pos.get("bases", [])}
@@ -472,6 +547,7 @@ def _fy_brief(store: Store, ev: dict) -> Brief:
 
 
 WRITERS = {
+    "signon": _signon_brief,
     "matter": _matter_brief, "funding": _funding_brief, "org": _org_brief,
     "ledger": _ledger_brief, "fy": _fy_brief,
 }

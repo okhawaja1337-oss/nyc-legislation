@@ -268,3 +268,8 @@ table.grid .num,table.grid th.num{text-align:right;font-variant-numeric:tabular-
   line-height:1.45;margin-top:3px;padding:2px 0;border-top:1px dotted var(--line);
   word-break:break-word}
 .cite:hover{color:var(--ink)}
+/* The CSP forbids inline style attributes — they are dropped silently, which
+   once shipped progress bars that never rendered. Anything positional lives
+   here as a class. */
+.row.baseline{align-items:baseline}
+h3.tight{margin-top:6px}

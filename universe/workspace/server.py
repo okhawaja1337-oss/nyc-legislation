@@ -377,6 +377,40 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail("Give a keyword to look for.", 400)
             return self.send(L.find(s, q, min(int(a.get("limit", 40)), 200)))
 
+        # ------------------------------------------------------- signon --
+        if path == "/api/signon":
+            from ..intel import signon as SO
+            return self.send(SO.queue(
+                s, limit=min(int(a.get("limit", 25)), 100),
+                verdicts=[v for v in (a.get("verdict") or "").split(",") if v]))
+        if path == "/api/signon/one":
+            from ..intel import signon as SO
+            mid = a.get("matter", "")
+            if not mid.isdigit():
+                return self.fail("Give a numeric Legistar matter id.", 400)
+            got = SO.assess(s, int(mid))
+            return (self.fail(got["error"], 404) if "error" in got
+                    else self.send(got))
+
+        # ---------------------------------------------------------- law --
+        if path == "/api/law":
+            from ..intel import law as LW
+            return self.send({"bodies": LW.bodies(s)})
+        if path == "/api/law/section":
+            from ..intel import law as LW
+            return self.send(LW.section(s, a.get("ref", ""),
+                                        min(int(a.get("limit", 60)), 200)))
+        if path == "/api/law/title":
+            from ..intel import law as LW
+            return self.send(LW.in_title(s, a.get("ref", "")))
+        if path == "/api/law/find":
+            from ..intel import law as LW
+            return self.send(LW.find(s, a.get("q", ""),
+                                     min(int(a.get("limit", 25)), 100)))
+        if path == "/api/law/matter":
+            from ..intel import law as LW
+            return self.send(LW.for_matter(s, a.get("matter", "")))
+
         # -------------------------------------------------------- repos --
         if path == "/api/repos":
             from ..live import repos as R

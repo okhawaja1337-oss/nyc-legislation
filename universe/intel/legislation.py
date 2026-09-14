@@ -308,10 +308,23 @@ def pending_for_pillars(store: Store, pillars: Iterable[str] | None = None,
                m.year, m.n_sponsors, m.pass_prob, m.pillars, m.prime_id,
                mb.name AS prime_name, mb.district AS prime_district, mb.party AS prime_party
         FROM matters m LEFT JOIN members mb ON mb.person_id = m.prime_id
-        WHERE ({clauses}) AND m.enacted = 0
+        WHERE ({clauses})
     """
     if live_only:
-        sql += " AND m.pending = 1"
+        # stage, not the booleans. A bill on the Mayor's desk cannot be signed
+        # on to and a bill still in committee can, and the booleans had that
+        # backwards for a hundred and fourteen matters.
+        #
+        # And the session, because stage alone is not enough. Eighty-five
+        # bills from the 2024-2025 session are still marked "Committee"
+        # upstream: Legistar applies "Filed (End of Session)" in bulk, months
+        # late. Every bill in committee died when that session ended, so a
+        # recommendation to sign one is an instruction to do something
+        # impossible.
+        sql += " AND m.stage = 'live' AND m.session = ?"
+        params.append(current_session(store))
+    else:
+        sql += " AND m.stage NOT IN ('law', 'dead')"
     if year:
         sql += " AND m.year = ?"
         params.append(year)

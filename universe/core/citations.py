@@ -39,10 +39,23 @@ class Source:
     def rank(self) -> int:
         return PROVENANCE.get(self.tier, 9)
 
+    @property
+    def caveat(self) -> str:
+        """What has to be said out loud when a brief leans on this source."""
+        from .config import NEEDS_CAVEAT
+        return NEEDS_CAVEAT.get(self.tier, "")
+
     def cite(self, locator: str | None = None) -> str:
         """Render a compact inline citation."""
+        from .config import NEEDS_CAVEAT
         loc = locator or self.locator
         bits = [self.name]
+        # A working paper cited as though refereed is how an office gets
+        # corrected in public. The caveat travels with the citation rather
+        # than living in a footnote nobody reaches.
+        caveat = NEEDS_CAVEAT.get(self.tier, "")
+        if caveat:
+            bits[0] = f"{self.name} [{caveat}]"
         if loc:
             bits.append(str(loc))
         if self.publisher and self.publisher not in self.name:

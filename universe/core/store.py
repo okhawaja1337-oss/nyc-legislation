@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS matters (
   committee     TEXT,
   year          INTEGER,
   session       TEXT,
+  -- Where the matter stands, derived from status in core/stage.py. In the
+  -- base schema and not only in MIGRATIONS: _migrate runs before the schema
+  -- script, so on a fresh lake the table does not exist yet, the migration
+  -- is skipped, and CREATE TABLE IF NOT EXISTS never adds the column. A
+  -- fresh install would then have no stage at all.
+  stage         TEXT,
   enacted       INTEGER DEFAULT 0,
   local_law     TEXT,
   prime_id      INTEGER,
@@ -250,6 +256,26 @@ CREATE TABLE IF NOT EXISTS sources (
   notes         TEXT
 );
 
+-- Which law each bill touches, and what it does to it. Extracted from the
+-- bill text, where every Local Law names its target precisely. Lets the
+-- office ask "who else has legislated on § 27-2004, and what happened to
+-- them" as a query rather than an afternoon in Legistar.
+CREATE TABLE IF NOT EXISTS code_refs (
+  ref_id        TEXT PRIMARY KEY,
+  matter_id     INTEGER,
+  file          TEXT,
+  body_of_law   TEXT,    -- admin_code | charter | rules | state
+  title         TEXT,    -- Administrative Code title, or the State law's name
+  section       TEXT,    -- '27-2005', '1043', '24-244.1'
+  action        TEXT,    -- amended | added | repealed | renumbered | cited
+  year          INTEGER,
+  stage         TEXT,
+  source_id     TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_code_section ON code_refs(body_of_law, section);
+CREATE INDEX IF NOT EXISTS ix_code_title ON code_refs(body_of_law, title);
+CREATE INDEX IF NOT EXISTS ix_code_matter ON code_refs(matter_id);
+
 -- What a bill actually says. The Council Record export carried each matter's
 -- truncated name and nothing else -- not the official summary, not the text --
 -- so the corpus could say that a bill existed and not what it did. These come
@@ -360,6 +386,10 @@ class Store:
     # exists, so a lake built by an earlier version needs the new columns
     # applied explicitly. Additive only -- nothing here drops or rewrites data.
     MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+        # Where a matter stands, derived from its status in one place. The
+        # enacted/pending booleans used to be set by whichever ingest touched
+        # a row last and drifted in both directions at once.
+        ("matters", "stage", "TEXT"),
         ("funding", "tier", "TEXT"),
         ("funding", "reso", "TEXT"),
         # Provenance on a contact. A phone number nobody can trace is a phone

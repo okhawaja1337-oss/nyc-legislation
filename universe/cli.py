@@ -494,6 +494,75 @@ def cmd_package(a, store: Store) -> None:
         print(f"  ! missing launchers: {', '.join(out['missing_launchers'])}")
 
 
+def cmd_signon(a, store: Store) -> None:
+    """Sign on, watch or decline — with the reasoning."""
+    from .intel import signon as SO
+    if a.matter:
+        got = SO.assess(store, int(a.matter))
+        if "error" in got:
+            print(got["error"]); return
+        print(f"{got['file']} — {got['name']}")
+        print(f"  {got['status']} · Committee on {got['committee']} · "
+              f"{got['n_sponsors']} sponsors · prime {got['prime']}")
+        print(f"\n  VERDICT: {got['verdict']} — {got['headline']}\n")
+        for r in got["for"]:
+            print(f"  +  {r}")
+        for r in got["against"]:
+            print(f"  -  {r}")
+        if got.get("law"):
+            print("\n  Amends: " + ", ".join(
+                f"§ {x['section']}" for x in got["law"]))
+        if got.get("precedent"):
+            print(f"  {got['precedent']['says']}")
+        print(f"\n  {got['url']}")
+        return
+    q = SO.queue(store, limit=a.limit,
+                 verdicts=a.verdict or (), pillars=a.pillar or None)
+    print(q["says"] + "\n")
+    for item in q["items"]:
+        print(f"[{item['verdict']:<8}] {item['file']:<15} {item['name'][:60]}")
+        for r in item["for"][:2]:
+            print(f"           +  {r}")
+        for r in item["against"][:2]:
+            print(f"           -  {r}")
+        print()
+
+
+def cmd_law(a, store: Store) -> None:
+    """What law a bill touches, and what has been tried there before."""
+    from .intel import law as LW
+    if a.what == "section":
+        got = LW.section(store, a.ref)
+        print(got["says"])
+        if not got["found"]:
+            return
+        print("  " + got["precedent"]["says"] + "\n")
+        for b in got["bills"][:a.limit]:
+            law_no = f" → LL {b['local_law']}" if b["local_law"] else ""
+            print(f"  {b['year']}  {b['file']:<16} {b['action']:<10} "
+                  f"{b['stage']:<8}{law_no}")
+            print(f"        {(b['name'] or '')[:78]}")
+    elif a.what == "title":
+        got = LW.in_title(store, a.ref)
+        print(got["says"] + "\n")
+        for r in got["sections"][:a.limit]:
+            print(f"  § {r['section']:<12} {r['amended']:>3} amended, "
+                  f"{r['refs']:>3} refs, latest {r['latest']}")
+    elif a.what == "find":
+        for r in LW.find(store, a.ref, limit=a.limit):
+            print(f"  § {r['section']:<12} {r['bills']:>3} bills "
+                  f"({r['amended']} amend) — {(r['example'] or '')[:56]}")
+    elif a.what == "matter":
+        got = LW.for_matter(store, a.ref)
+        print(got["says"] + "\n")
+        for r in got["refs"]:
+            print(f"  {r['action']:<10} {r['body_of_law']:<11} § {r['section']}")
+    else:
+        for r in LW.bodies(store):
+            print(f"  {r['body_of_law']:<12} {r['refs']:>7,} refs  "
+                  f"{r['sections']:>5,} sections  {r['bills']:>6,} bills")
+
+
 def cmd_repos(a, store: Store) -> None:
     """The source repositories on GitHub: what is here, and how old it is."""
     from .live import repos as R
@@ -863,6 +932,27 @@ def build_parser() -> argparse.ArgumentParser:
     mt.add_argument("--limit", type=int, default=12)
     mt.add_argument("--no-ai", action="store_true", help="evidence only, no prose")
     mt.set_defaults(fn=cmd_meeting)
+
+    so = sub.add_parser("signon",
+                        help="sign on, watch or decline — with the reasoning")
+    so.add_argument("--matter", help="assess one bill by Legistar id")
+    so.add_argument("--verdict", nargs="*",
+                    choices=["sign", "watch", "decline", "letter", "already",
+                             "SIGN", "WATCH", "DECLINE", "LETTER", "ALREADY"])
+    so.add_argument("--pillar", nargs="*")
+    so.add_argument("--limit", type=int, default=12)
+    so.set_defaults(fn=cmd_signon)
+
+    lw = sub.add_parser("law",
+                        help="the code index: what bills touch which law")
+    lw.add_argument("what", nargs="?",
+                    choices=["coverage", "section", "title", "find", "matter"],
+                    default="coverage")
+    lw.add_argument("ref", nargs="?", default="",
+                    help="a section (27-2004), a title (27), a matter id, "
+                         "or words to search")
+    lw.add_argument("--limit", type=int, default=20)
+    lw.set_defaults(fn=cmd_law)
 
     pk = sub.add_parser("package",
                         help="build the zip the office downloads")

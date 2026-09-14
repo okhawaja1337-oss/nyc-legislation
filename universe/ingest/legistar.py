@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from ..core import stage
 from ..core.store import Store
 
 # Where each Legistar type lives in the mirror, and the code the corpus uses.
@@ -158,8 +159,8 @@ def ingest(store: Store, root: Path | str, years: set[int] | None = None,
         return {"error": f"no Legistar mirror at {root}", "loaded": 0}
 
     known = {int(r["matter_id"]): dict(r) for r in store.q(
-        "SELECT matter_id, status, committee, enacted, local_law, n_sponsors "
-        "FROM matters")}
+        "SELECT matter_id, status, committee, enacted, stage, local_law, "
+        "n_sponsors FROM matters")}
     counts = {"seen": 0, "new": 0, "updated": 0, "text": 0, "skipped": 0,
               "unreadable": 0, "superseded": 0, "sponsorships": 0}
     # Keyed by matter id, not appended. Upstream files one matter under two
@@ -204,7 +205,13 @@ def ingest(store: Store, root: Path | str, years: set[int] | None = None,
         status = str(row.get("StatusName") or "").strip() or None
         committee = _committee(row.get("BodyName"))
         law = _local_law(row)
-        enacted = 1 if (_date(row.get("EnactmentDate")) or law) else 0
+        # Derived in one place from status, never set independently here. The
+        # two used to disagree: "Enacted (Mayor's Desk for Signature)" carries
+        # no enactment date and no local law, so this line set enacted=0 while
+        # the status said otherwise, and the sign-on recommender offered the
+        # Councilmember a bill that had already passed.
+        stage_name, enacted, pending = stage.flags(
+            status, law, _date(row.get("EnactmentDate")))
         sponsors = row.get("Sponsors") or []
         prime = sponsors[0].get("ID") if sponsors else None
 
@@ -216,13 +223,14 @@ def ingest(store: Store, root: Path | str, years: set[int] | None = None,
               or prior.get("enacted") != enacted
               or (prior.get("local_law") or None) != law
               or prior.get("committee") != committee
-              or prior.get("n_sponsors") != n_sponsors):
+              or prior.get("n_sponsors") != n_sponsors
+              or prior.get("stage") != stage_name):
             counts["updated"] += 1
 
         matters[mid] = (mid, file_no, str(row.get("Name") or "").strip(),
                         code, status, committee, year, session_of(year),
-                        enacted, law, prime, n_sponsors,
-                        "LEGISTAR_MIRROR", _now())
+                        enacted, pending, stage_name, law, prime,
+                        n_sponsors, "LEGISTAR_MIRROR", _now())
 
         summary = _clean(row.get("Summary"), 8000)
         body = _clean(row.get("Text"))
@@ -300,15 +308,16 @@ def _write(store: Store, matters: list[tuple], texts: list[tuple],
         # all of it away on every sync.
         c.executemany(
             "INSERT INTO matters (matter_id, file, name, type, status, "
-            "committee, year, session, enacted, local_law, prime_id, "
-            "n_sponsors, source_id, updated) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "committee, year, session, enacted, pending, stage, local_law, "
+            "prime_id, n_sponsors, source_id, updated) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(matter_id) DO UPDATE SET "
             "  file=excluded.file, name=excluded.name, type=excluded.type, "
             "  status=excluded.status, committee=excluded.committee, "
             "  year=COALESCE(excluded.year, matters.year), "
             "  session=COALESCE(excluded.session, matters.session), "
-            "  enacted=excluded.enacted, "
+            "  enacted=excluded.enacted, pending=excluded.pending, "
+            "  stage=excluded.stage, "
             "  local_law=COALESCE(excluded.local_law, matters.local_law), "
             "  prime_id=COALESCE(excluded.prime_id, matters.prime_id), "
             "  n_sponsors=excluded.n_sponsors, updated=excluded.updated, "

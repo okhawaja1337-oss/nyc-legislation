@@ -169,7 +169,8 @@ const TITLES = { home: 'Home', mywork: 'My work', inbox: 'Inbox', calendar: 'Cal
   workload: 'Workload', search: 'Search', assistant: 'Assistant', media: 'Media & press',
   sources: 'Sources', project: 'Project', meetings: 'Meetings', changes: 'What changed',
   breakdown: 'Breakdowns', connections: 'Connections', briefs: 'Run a brief',
-  position: 'The district position', repos: 'Source repositories' };
+  position: 'The district position', repos: 'Source repositories',
+  signon: 'Sign-on decisions', law: 'The code' };
 
 async function route() {
   const [name, qs] = (location.hash.slice(1) || 'home').split('?');
@@ -185,13 +186,26 @@ async function route() {
   await render();
 }
 
+/* Every view is async, so two navigations close together race each other and
+   whichever server round-trip finishes last wins the page. That is not a rare
+   edge: clicking Meetings while Home is still loading rendered Home under the
+   Meetings heading, and the breadcrumb — set synchronously — said Meetings, so
+   the page looked merely wrong rather than stale. A render only gets to write
+   if it is still the current one. */
+let renderSeq = 0;
+
 async function render() {
   const main = $('#main');
+  const mine = ++renderSeq;
+  const route = state.route;
   try {
-    const view = VIEWS[state.route];
-    if (view) main.innerHTML = await view();
+    const view = VIEWS[route];
+    const html = view ? await view() : '';
+    if (mine !== renderSeq) return;   // a newer navigation has taken over
+    if (view) main.innerHTML = html;
     wire();
   } catch (e) {
+    if (mine !== renderSeq) return;
     main.innerHTML = `<div class="empty"><h3>Could not load this view</h3>
       <p>${esc(e.message)}</p><button class="btn" data-act="reload">Try again</button></div>`;
     wire();
@@ -883,6 +897,12 @@ async function action(act, el) {
       await api('/api/brief/run', { kind: 'record', subject: key });
       return toast('Brief queued — it appears under Run a brief when done.');
     }
+    if (act === 'law-go') {
+      const q = ($('#law-q')?.value || '').trim();
+      if (!q) return;
+      return location.hash = '#law?mode=' + (q.includes('-') ? 'section' : 'find')
+        + '&ref=' + encodeURIComponent(q);
+    }
     if (act === 'position-find') {
       const q = ($('#pos-q')?.value || '').trim();
       const box = $('#pos-hits');
@@ -1429,4 +1449,112 @@ VIEWS.repos = async () => {
         <p class="muted">To refresh, run <code>python3 -m universe repos sync</code>
         in the terminal. It pulls both repositories and reloads whatever moved.</p>
         </div>`;
+};
+
+
+/* ---------------------------------------------------- sign-on decisions */
+/* A list of relevant bills is not a recommendation, and the difference is the
+   whole job: forty candidates arrive every week and the scarce thing is not
+   finding them, it is deciding. Every verdict shows its reasoning, because a
+   recommender whose reasoning is hidden gets ignored the first time it is
+   wrong — and this one will be, sometimes. */
+const VERDICT_TONE = {
+  SIGN: 'good', WATCH: 'warn', LETTER: '', DECLINE: '', ALREADY: '',
+};
+
+VIEWS.signon = async () => {
+  const want = state.params.verdict || '';
+  const q = await api('/api/signon?limit=30' + (want ? '&verdict=' + encodeURIComponent(want) : ''));
+  const tallies = Object.entries(q.by_verdict || {})
+    .map(([k, v]) => `<a class="btn sm${want === k ? ' primary' : ''}"
+        href="#signon?verdict=${esc(k)}">${esc(k)} ${v}</a>`).join(' ');
+
+  const cards = (q.items || []).map(a => `
+    <div class="card">
+      <div class="row gap wrap baseline">
+        <b class="pill ${VERDICT_TONE[a.verdict] || ''}">${esc(a.verdict)}</b>
+        <strong>${esc(a.file)}</strong>
+        <span class="muted">${esc(a.committee || '')} · ${num(a.n_sponsors)} sponsors ·
+          prime ${esc(a.prime || '—')}</span>
+      </div>
+      <h3 class="tight">${esc(a.name || '')}</h3>
+      <p class="note">${esc(a.headline)}</p>
+      <ul class="small">
+        ${(a.for || []).map(r => `<li>+ ${esc(r)}</li>`).join('')}
+        ${(a.against || []).map(r => `<li class="alert-text">− ${esc(r)}</li>`).join('')}
+      </ul>
+      ${(a.law || []).length ? `<p class="small muted">Amends ${
+        a.law.map(x => '§ ' + esc(x.section)).join(', ')}</p>` : ''}
+      <div class="row gap wrap">
+        <a class="btn sm" href="${esc(a.url)}" target="_blank" rel="noopener">Legistar</a>
+        <button class="btn sm" data-act="brief-record"
+          data-key="signon:${esc(a.matter_id)}">Write the memo</button>
+        <button class="btn sm" data-record="matter:${esc(a.matter_id)}">The bill</button>
+      </div>
+    </div>`).join('');
+
+  return head('Legislative', 'Sign-on decisions',
+      'Sign, watch, decline — with the reasoning, so she can overrule it in one read.')
+    + `<div class="card"><p>${esc(q.says || '')}</p>
+        <div class="row gap wrap">
+          <a class="btn sm${want ? '' : ' primary'}" href="#signon">all</a>
+          ${tallies}
+        </div></div>`
+    + (cards || '<div class="card"><p>Nothing live matches the office\u2019s pillars right now. That is a real answer, not an empty one.</p></div>');
+};
+
+/* ------------------------------------------------------------- the code */
+/* Drafting starts with three questions the corpus could not answer: has anyone
+   legislated on this section, what happened to them, and what else lives here.
+   The base rate is the useful one — it is what nobody has, because computing it
+   by hand means reading a decade of Legistar. */
+VIEWS.law = async () => {
+  const ref = state.params.ref || '';
+  const mode = state.params.mode || (ref.includes('-') ? 'section' : ref ? 'find' : '');
+  let body = '';
+
+  if (mode === 'section' && ref) {
+    const d = await api('/api/law/section?ref=' + encodeURIComponent(ref));
+    body = `<div class="card"><h3>${esc(d.says)}</h3>
+      ${d.found ? `<p class="note">${esc(d.precedent.says)}</p>` : ''}</div>`
+      + (d.found ? `<div class="card table-wrap"><table class="grid">
+        <thead><tr><th>Year</th><th>Bill</th><th>Action</th><th>Outcome</th>
+          <th>What it did</th></tr></thead><tbody>
+        ${d.bills.map(b => `<tr><td>${b.year || '—'}</td>
+          <td><button class="linkish" data-record="matter:${esc(b.matter_id)}"
+            >${esc(b.file)}</button></td>
+          <td>${esc(b.action)}</td>
+          <td>${esc(b.stage)}${b.local_law ? ' · LL ' + esc(b.local_law) : ''}</td>
+          <td class="small">${esc((b.name || '').slice(0, 90))}</td></tr>`).join('')}
+        </tbody></table></div>` : '');
+  } else if (mode === 'find' && ref) {
+    const rows = await api('/api/law/find?q=' + encodeURIComponent(ref));
+    body = `<div class="card table-wrap"><h3>Sections governing “${esc(ref)}”</h3>
+      <table class="grid"><thead><tr><th>Section</th><th class="num">Bills</th>
+        <th class="num">Amended</th><th>Example</th></tr></thead><tbody>
+      ${rows.map(r => `<tr>
+        <td><a href="#law?mode=section&ref=${esc(r.section)}">§ ${esc(r.section)}</a></td>
+        <td class="num">${num(r.bills)}</td><td class="num">${num(r.amended)}</td>
+        <td class="small">${esc((r.example || '').slice(0, 70))}</td></tr>`).join('')
+        || '<tr><td colspan="4" class="muted">No section matched.</td></tr>'}
+      </tbody></table></div>`;
+  } else {
+    const d = await api('/api/law');
+    body = `<div class="cards">${d.bodies.map(b => `<div class="card">
+      <h3>${esc(b.body_of_law.replace('_', ' '))}</h3>
+      <p class="n">${num(b.sections)}</p>
+      <p class="muted">sections, across ${num(b.bills)} bills
+        (${num(b.refs)} references)</p></div>`).join('')}</div>`;
+  }
+
+  return head('Legislative', 'The code',
+      'What each bill touches, and what has been tried there before.')
+    + `<div class="card"><div class="row gap wrap">
+        <input id="law-q" class="grow" value="${esc(ref)}"
+          placeholder="A section (27-2004), or words — street vending, noise, sidewalk">
+        <button class="btn primary" data-act="law-go">Look it up</button>
+      </div>
+      <p class="small muted">A section number goes straight to its history.
+        Words find the sections that govern that subject, by reading the bills
+        that amend them.</p></div>` + body;
 };

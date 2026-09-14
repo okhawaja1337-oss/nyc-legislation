@@ -250,6 +250,50 @@ CREATE TABLE IF NOT EXISTS sources (
   notes         TEXT
 );
 
+-- The office's own reconciliation work: the 56-sheet workbook that ties the
+-- district's real position out against the printed books, and the District 49
+-- full breakdown. Schedule C says who signed; this says where money landed.
+-- Every row keeps its sheet, its row number and its raw cells so any figure
+-- the system prints can be walked back to the cell it was read from.
+CREATE TABLE IF NOT EXISTS ledger (
+  row_id        TEXT PRIMARY KEY,
+  book          TEXT,
+  sheet         TEXT,
+  sheet_no      INTEGER,
+  row_no        INTEGER,
+  label         TEXT,
+  amount        REAL,
+  amount_col    TEXT,
+  kind          TEXT,     -- line | total | tie_check | section | note
+  member        TEXT,
+  channel       TEXT,     -- capital | expense | speaker | citywide | delegation
+  fy            INTEGER,
+  cells         TEXT,     -- JSON: the whole row, nothing dropped
+  headers       TEXT,     -- JSON: the sheet's column names
+  source_id     TEXT,
+  locator       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_ledger_book ON ledger(book, sheet);
+CREATE INDEX IF NOT EXISTS ix_ledger_kind ON ledger(kind);
+CREATE INDEX IF NOT EXISTS ix_ledger_member ON ledger(member, fy);
+
+-- What the system has pulled from each source repository, and when. A file
+-- that changed upstream and was never re-ingested is the quiet failure this
+-- table exists to make loud.
+CREATE TABLE IF NOT EXISTS repo_files (
+  path          TEXT PRIMARY KEY,
+  repo          TEXT,
+  sha           TEXT,
+  bytes         INTEGER,
+  seen          TEXT,
+  ingested      TEXT,
+  ingested_sha  TEXT,
+  handler       TEXT,
+  status        TEXT,     -- fresh | stale | new | unhandled | failed
+  note          TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_repo_files_repo ON repo_files(repo, status);
+
 CREATE TABLE IF NOT EXISTS meta (
   key           TEXT PRIMARY KEY,
   value         TEXT,

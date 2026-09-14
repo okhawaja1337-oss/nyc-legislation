@@ -153,10 +153,46 @@ def watch_calendar(store: Store) -> list[dict]:
     return rows
 
 
+def watch_ledger(store: Store) -> list[dict]:
+    """
+    Watch the reconciliation's totals and its tie-checks.
+
+    Only the load-bearing rows: the totals the office quotes in public and the
+    checks that prove those totals reproduce the City's printed books. A
+    tie-check that stops passing means a source book was reissued underneath
+    the office's arithmetic, and every figure on that sheet is unproven until
+    somebody looks. There is no louder signal in the whole system.
+    """
+    rows = []
+    for r in store.q("SELECT row_id, book, sheet, label, amount, kind, cells "
+                     "FROM ledger WHERE kind IN ('total','tie_check')"):
+        rows.append({
+            "key": f"ledger:{r['row_id']}",
+            "kind": "ledger",
+            "entity_id": r["row_id"],
+            "label": f"{r['sheet']} — {r['label']}"[:160],
+            "fields": {"amount": r["amount"], "kind": r["kind"],
+                       "passes": _tie_passes(r["cells"])
+                       if r["kind"] == "tie_check" else None},
+        })
+    return rows
+
+
+def _tie_passes(cells: Any) -> bool | None:
+    if not cells:
+        return None
+    blob = str(cells).upper()
+    if "TIE" not in blob and "✓" not in blob:
+        return None
+    return "TIES ✓" in blob or "✓ TIES" in blob or "EXACT TIE" in blob \
+        or "IDENTICAL" in blob
+
+
 COLLECTORS: dict[str, Callable[[Store], list[dict]]] = {
     "matter": watch_matters,
     "funding": watch_funding,
     "calendar": watch_calendar,
+    "ledger": watch_ledger,
 }
 
 
@@ -217,6 +253,22 @@ def severity(kind: str, field: str, before: Any, after: Any,
             return ("medium" if abs(delta) >= 5 else "low"), \
                    f"Sponsor count moved by {int(delta):+d}."
         return "low", "A descriptive field on the bill changed."
+
+    if kind == "ledger":
+        if field == "passes":
+            if before and not after:
+                return "high", ("A reconciliation check that used to tie no "
+                                "longer does. Every figure on that sheet is "
+                                "unproven until somebody re-checks it.")
+            if after and not before:
+                return "medium", "A reconciliation check now ties."
+            return "medium", "A reconciliation check changed state."
+        if field == "amount":
+            delta = _money_delta(before, after)
+            return "high", (f"A published total moved by ${abs(delta or 0):,.0f}. "
+                            f"Anything the office already said using the old "
+                            f"figure is now wrong.")
+        return "medium", "A reconciliation row changed."
 
     if kind == "calendar":
         if field in ("start", "end"):

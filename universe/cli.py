@@ -473,6 +473,104 @@ def cmd_watch(a, store: Store) -> None:
         _p(watch.status(store), raw=True)
 
 
+def cmd_repos(a, store: Store) -> None:
+    """The source repositories on GitHub: what is here, and how old it is."""
+    from .live import repos as R
+    if a.action == "sync":
+        out = R.sync(store, a.repo or None, pull=not a.no_pull, force=a.force)
+        for key, rec in out["repos"].items():
+            if "error" in rec:
+                print(f"  {key}: {rec['error']}")
+                continue
+            print(f"  {key:<12} {rec['state']:<9} {rec.get('says','')}")
+            counts = rec.get("manifest", {}).get("counts", {})
+            if counts:
+                print("               " + "  ".join(
+                    f"{k}={v}" for k, v in sorted(counts.items()) if v))
+        print()
+        print("Anything marked new or stale is loaded on this run. "
+              "Run `universe watch scan` to see what moved.")
+    elif a.action == "adopt":
+        _p(R.adopt(store, a.repo[0] if a.repo else "", a.path), raw=True)
+    elif a.action == "stale":
+        rows = R.stale(store)
+        if not rows:
+            print("Every handled file is loaded from its current bytes.")
+        for r in rows:
+            print(f"  [{r['status']:<9}] {r['path']}  ({r['handler'] or 'no handler'})")
+    else:
+        st = R.status(store)
+        print(f"Clones live under {st['root']}")
+        print(f"Last sync: {st['last_sync'] or 'never'}\n")
+        for key, rec in st["repos"].items():
+            mark = "" if rec.get("cloned") else "  [NOT CLONED]"
+            print(f"  {key}{mark}")
+            print(f"    {rec['url']}")
+            print(f"    {rec['purpose']}")
+            print(f"    {rec['files']} files, {rec['bytes'] / 1e6:.1f} MB, "
+                  f"last loaded {rec['last_ingest'] or 'never'}")
+            if rec["by_status"]:
+                print("    " + "  ".join(f"{k}={v}" for k, v in
+                                         sorted(rec["by_status"].items())))
+            print()
+
+
+def cmd_position(a, store: Store) -> None:
+    """Every defensible answer to 'what did District 49 get'."""
+    from .intel import ledger as L
+    if a.what == "channels":
+        for row in L.channels(store):
+            print(f"  {str(row['channel']):<14} {row['lines']:>6} lines  "
+                  f"${row['total'] or 0:>14,.0f}")
+        return
+    if a.what == "categories":
+        for row in L.categories(store):
+            print(f"  {row['category']:<26} ${row['amount'] or 0:>12,.0f}  "
+                  f"{row['share']:>5.1f}%")
+        return
+    if a.what == "items":
+        for row in L.items(store, a.category, limit=a.limit):
+            print(f"  ${row['amount'] or 0:>12,.0f}  {row['label'][:86]}")
+        return
+    if a.what == "find":
+        for row in L.find(store, " ".join(a.keyword), limit=a.limit):
+            amt = f"${row['amount']:,.0f}" if row["amount"] else "—"
+            print(f"  {amt:>14}  [{row['kind']:<9}] {row['label'][:60]}")
+            print(f"                  {row['locator']}")
+        return
+    if a.what == "ties":
+        for c in L.tie_checks(store):
+            print(f"  [{'PASS' if c['passes'] else 'CHECK'}] {c['sheet'][:32]:<34} "
+                  f"{c['check'][:52]}")
+        return
+    if a.what == "books":
+        for book, rec in L.loaded(store).items():
+            print(f"  {book}")
+            print(f"    {rec['rows']} rows, {rec['sheets']} sheets, "
+                  f"{rec['lines']} lines, {rec['ties']} tie-checks")
+        return
+
+    pos = L.position(store, a.fy)
+    print(f"DISTRICT 49 POSITION — FY{pos['fy']}")
+    print("Five true answers to five different questions. "
+          "Quoting one without its question is how an office "
+          "contradicts itself in public.\n")
+    for b in pos["bases"]:
+        if b.get("amount") is None:
+            print(f"  {b['key']:<15} NOT LOADED — {b['question']}")
+            continue
+        tie = {True: "ties ✓", False: "DOES NOT TIE", None: "—"}[b.get("ties")]
+        print(f"  ${b['amount']:>13,.0f}   {b['question']}")
+        extra = f"{b['lines']} lines · " if b.get("lines") else ""
+        print(f"  {'':>14}   {extra}{b.get('source') or ''}  [{tie}]")
+        print(f"  {'':>14}   {b['caution']}")
+        print()
+    tc = pos["tie_checks"]
+    print(f"Reconciliation checks: {tc['passing']} of {tc['total']} passing.")
+    for note in pos["notes"]:
+        print(f"  ! {note}")
+
+
 def cmd_breakdown(a, store: Store) -> None:
     """Cut any legislation or budget search by any dimension."""
     from .workspace import breakdown as BD
@@ -696,7 +794,8 @@ def build_parser() -> argparse.ArgumentParser:
     wt.add_argument("action", nargs="?",
                     choices=["scan", "digest", "list", "ack", "status"],
                     default="status")
-    wt.add_argument("--kinds", nargs="*", help="matter funding calendar")
+    wt.add_argument("--kinds", nargs="*",
+                help="matter funding calendar ledger")
     wt.add_argument("--baseline", action="store_true",
                     help="record the world as it is without reporting changes")
     wt.add_argument("--hours", type=int, default=168)
@@ -733,6 +832,31 @@ def build_parser() -> argparse.ArgumentParser:
     mt.add_argument("--limit", type=int, default=12)
     mt.add_argument("--no-ai", action="store_true", help="evidence only, no prose")
     mt.set_defaults(fn=cmd_meeting)
+
+    rp = sub.add_parser("repos",
+                        help="the source repositories on GitHub, kept live")
+    rp.add_argument("action", nargs="?",
+                    choices=["status", "sync", "stale", "adopt"],
+                    default="status")
+    rp.add_argument("--repo", nargs="*", help="budget legislation legistar")
+    rp.add_argument("--path", help="an existing checkout to adopt")
+    rp.add_argument("--no-pull", action="store_true",
+                    help="use the clone on disk, do not reach GitHub")
+    rp.add_argument("--force", action="store_true",
+                    help="re-ingest every handled file, changed or not")
+    rp.set_defaults(fn=cmd_repos)
+
+    po = sub.add_parser("position",
+                        help="what District 49 actually got, on every basis")
+    po.add_argument("what", nargs="?",
+                    choices=["summary", "channels", "categories", "items",
+                             "find", "ties", "books"],
+                    default="summary")
+    po.add_argument("keyword", nargs="*", help="for `find`")
+    po.add_argument("--fy", type=int, default=CURRENT_FY)
+    po.add_argument("--category", help="for `items`")
+    po.add_argument("--limit", type=int, default=40)
+    po.set_defaults(fn=cmd_position)
 
     return p
 

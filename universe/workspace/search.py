@@ -20,6 +20,7 @@ Nothing here interpolates user text into SQL. Every value is bound.
 from __future__ import annotations
 
 import re
+import sqlite3
 import time
 from typing import Any, Iterable
 
@@ -281,6 +282,17 @@ def search_nl(store, question: str, limit: int = 60, **kw) -> dict:
     The first step that returns anything wins, so a precise query is never
     loosened and a conversational one still finds the record.
     """
+    # An identifier is a key, not a phrase. Resolve it before the ladder can
+    # get hold of it: "365-2026" was being split on the hyphen, failing to
+    # find a record containing both "365" and "2026" (the corpus stores the
+    # number padded, as "0365-2026"), and then falling back to matching
+    # *either* token -- so the two bills that actually carry that number were
+    # buried under every bill introduced in 2026. A key either resolves or it
+    # does not; it is never loosened.
+    hit = _by_identifier(store, question, limit, **kw)
+    if hit is not None:
+        return hit
+
     exact = search(store, question, limit=limit, **kw)
     if exact.get("total") or exact.get("error"):
         return {**exact, "strategy": "exact"}
@@ -327,3 +339,73 @@ def record(store, key: str) -> dict | None:
         SELECT t.id, t.title, t.status, t.owner FROM ws_links l
         JOIN workspace_tasks t ON t.id = l.task_id WHERE l.record_key = ?""", [key])]
     return out
+
+
+def _by_identifier(store, question: str, limit: int, **kw) -> dict | None:
+    """
+    Resolve a bill number, local law, matter id, EIN or row key exactly.
+
+    Returns None when the text is not an identifier, so ordinary search runs.
+    Returns a result with zero records when it *is* an identifier naming
+    nothing -- which is the useful answer, because "that bill is not in the
+    corpus" is information and a page of loose matches is not.
+    """
+    from ..core import identify
+
+    got = identify.resolve(store, question, limit=limit)
+    if got is None:
+        return None
+    base = {"query": question, "filters": {}, "sort": "relevance",
+            "limit": limit, "offset": 0, "ms": 0.0,
+            "parsed": {"text": [question], "not_text": [], "clauses": [],
+                       "excluded": []},
+            "strategy": "identifier", "identifier": got["identifier"],
+            "note": got["note"]}
+    keys = [r["key"] for r in got["records"] if r.get("key")]
+    if not keys:
+        return {**base, "rows": [], "total": 0, "facets": {}}
+    # Come back through the index so the caller gets the same record shape,
+    # facets and citations as any other search rather than a special case.
+    #
+    # The index may not exist. A lake that has never been reindexed has no
+    # workspace_records table at all, and that is exactly the state a fresh
+    # install is in -- so a search for a bill number on day one crashed rather
+    # than answering from the resolver, which already had the record in hand.
+    try:
+        rows = store.q(
+            f"SELECT * FROM workspace_records WHERE key IN "
+            f"({','.join('?' * len(keys))})", keys)
+    except sqlite3.OperationalError:
+        rows = []
+    order = {k: i for i, k in enumerate(keys)}
+    records = sorted((dict(r) for r in rows),
+                     key=lambda r: order.get(r["key"], 999))
+    # A record the identifier resolved but the index has not caught up with
+    # still has to come back, or a bill introduced since the last reindex
+    # would read as missing.
+    found = {r["key"] for r in records}
+    for r in got["records"]:
+        if r.get("key") and r["key"] not in found:
+            records.append(_from_raw(r))
+    kinds: dict[str, int] = {}
+    for r in records:
+        kinds[r.get("kind") or "?"] = kinds.get(r.get("kind") or "?", 0) + 1
+    return {**base, "rows": records[:limit], "total": len(records),
+            "facets": {"kind": [{"value": k, "n": n}
+                                for k, n in sorted(kinds.items())]}}
+
+
+def _from_raw(row: dict) -> dict:
+    """Shape a directly-resolved row like an indexed record."""
+    return {
+        "key": row.get("key"), "kind": row.get("kind", "matter"),
+        "entity_id": str(row.get("matter_id") or row.get("entity_id") or ""),
+        "title": (f"{row.get('file', '')} — {row.get('name', '')}".strip(" —")
+                  or row.get("title") or row.get("label") or ""),
+        "body": row.get("name") or row.get("label") or "",
+        "year": row.get("year"), "status": row.get("status"),
+        "committee": row.get("committee"), "sponsor": row.get("member"),
+        "amount": row.get("amount"), "org": row.get("org"),
+        "source_id": row.get("source_id"), "url": row.get("url"),
+        "not_indexed": True,
+    }

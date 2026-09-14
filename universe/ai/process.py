@@ -185,10 +185,24 @@ def _mkid(kind: str, subject: str) -> str:
 
 
 # ----------------------------------------------------------------- runner ----
+def _record(store: Store, subject: str, **kw) -> Brief:
+    """
+    Brief whatever the office just found in search.
+
+    Routed through the same builder registry as every other kind, on purpose:
+    a brief written off a search result has to clear the same gates as one
+    written from the fiscal position. A second path that skipped them would be
+    the path everyone used.
+    """
+    from .anything import brief as record_brief
+    return record_brief(store, subject, **kw)
+
+
 BUILDERS: dict[str, Callable[..., Brief]] = {
     "fiscal": lambda store, subject, **kw: fiscal_brief(store, **kw),
     "member": lambda store, subject, **kw: member_brief(store, subject, **kw),
     "matter": lambda store, subject, **kw: matter_brief(store, int(subject), **kw),
+    "record": _record,
 }
 
 
@@ -216,6 +230,12 @@ def run(store: Store, kind: str, subject: str = "", *,
         return d
     brief = builder(store, subject, with_council=False, **kw)
     d.brief = brief
+    # The brief knows what it is about better than the caller does. A record
+    # brief is asked for by key -- "matter:79313" -- and filing it under that
+    # key puts an internal identifier in front of the Councilmember where the
+    # bill number belongs.
+    if brief.subject and brief.subject != subject:
+        d.subject = brief.subject
     ev_keys = list(brief.evidence)
     d.stages.append(Stage("evidence", bool(ev_keys),
                           {"blocks": ev_keys, "sources": brief.sources_used},

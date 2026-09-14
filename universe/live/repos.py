@@ -100,9 +100,14 @@ REPOS: dict[str, Repo] = {
         "legistar",
         "https://github.com/jehiah/nyc_legislation",
         "The upstream flat-file mirror of the NYC Council Legistar Web API: "
-        "introductions, resolutions, land use, events and per-member votes. "
-        "This is where new legislation appears first.",
-        subdirs=("introduction", "resolution", "landuse", "events", "people"),
+        "every introduction, resolution and land use item since 1996, with "
+        "the Council's own summary, the full bill text, attachments and the "
+        "action history. This is where new legislation appears first.",
+        # Twenty-one thousand small JSON files. Hashing each one on every sync
+        # would take longer than reading them, so this repository syncs by its
+        # own last_sync.json high-water mark instead of by manifest.
+        subdirs=("last_sync.json",),
+        role="bulk",
     ),
 }
 
@@ -362,6 +367,8 @@ def sync(store: Store, keys: Iterable[str] | None = None,
         if repo.role == "data":
             record["manifest"] = manifest(store, repo, root)
             record["load"] = ingest_changed(store, repo, root, force=force)
+        elif repo.role == "bulk":
+            record["load"] = _sync_legistar(store, repo, root, force=force)
         record["says"] = _says(record)
         out["repos"][key] = record
 
@@ -370,8 +377,42 @@ def sync(store: Store, keys: Iterable[str] | None = None,
     return out
 
 
+def _sync_legistar(store: Store, repo: Repo, root: Path | None,
+                   force: bool = False) -> dict:
+    """
+    Load whatever moved in the legislative mirror.
+
+    Incremental by the LastModified stamp the mirror puts on every matter, so
+    a daily sync reads the handful of bills that changed rather than all
+    21,628. A full pass takes about two and a half minutes; an incremental one
+    takes seconds, which is the difference between a sync the office runs and
+    one it does not.
+    """
+    from ..ingest.legistar import ingest
+    last = store.get_meta("legistar.last_ingest") or {}
+    since = None if force else (last.get("high_water") or None)
+    try:
+        out = ingest(store, repo.path(root), since=since)
+    except Exception as exc:                             # noqa: BLE001
+        return {"failed": {"legistar": f"{type(exc).__name__}: {exc}"}}
+    return {"ingested": {"legistar": out}}
+
+
 def _says(record: dict) -> str:
     """One sentence a staffer can act on."""
+    if record.get("role") == "bulk":
+        got = (record.get("load", {}).get("ingested", {}).get("legistar")
+               or {})
+        if record.get("load", {}).get("failed"):
+            return ("The legislative mirror failed to load: "
+                    + "; ".join(record["load"]["failed"].values()))
+        moved = (got.get("new", 0), got.get("updated", 0))
+        where = ("Pulled from GitHub." if record["state"] == "current"
+                 else "Could not reach GitHub; read the clone on disk.")
+        if not any(moved):
+            return f"{where} No legislation had changed since the last load."
+        return (f"{where} {moved[0]} new bill(s), {moved[1]} with a changed "
+                f"status, committee or sponsor count.")
     if record.get("role") == "code":
         head = record.get("fetch", {}).get("head") or "unknown"
         return (f"Code, not data. Running {head}."
@@ -416,6 +457,25 @@ def status(store: Store) -> dict:
             "files": 0, "bytes": 0, "by_status": {}, "last_ingest": None,
             "purpose": repo.purpose, "url": repo.url, "role": repo.role})
         by_repo[key]["cloned"] = repo.path().exists()
+        by_repo[key]["role"] = repo.role
+        if repo.role == "bulk":
+            # A bulk repository keeps no per-file manifest, so reporting
+            # "0 files, never loaded" from the manifest table would say the
+            # legislative record is missing when 21,627 matters are loaded.
+            from ..ingest.legistar import coverage as legistar_coverage
+            last = store.get_meta("legistar.last_ingest") or {}
+            cov = legistar_coverage(store)
+            # What is loaded, not what the last run happened to touch. An
+            # incremental sync that found nothing new would otherwise report
+            # "0 matters" for a corpus holding 21,627 of them.
+            by_repo[key].update({
+                "last_ingest": last.get("at"),
+                "high_water": last.get("high_water"),
+                "records": cov.get("matters"),
+                "by_status": {k: v for k, v in
+                              (("with text", (cov.get("with_text") or {}).get("texts")),
+                               ("with summary", (cov.get("with_text") or {}).get("summaries")))
+                              if v}})
     return {"last_sync": last.get("at"), "repos": by_repo,
             "root": str(DEFAULT_ROOT)}
 

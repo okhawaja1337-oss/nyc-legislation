@@ -507,8 +507,16 @@ def cmd_repos(a, store: Store) -> None:
             print(f"  {key}{mark}")
             print(f"    {rec['url']}")
             print(f"    {rec['purpose']}")
-            print(f"    {rec['files']} files, {rec['bytes'] / 1e6:.1f} MB, "
-                  f"last loaded {rec['last_ingest'] or 'never'}")
+            if rec.get("role") == "bulk":
+                print(f"    {rec.get('records') or 0:,} matters, "
+                      f"last loaded {rec['last_ingest'] or 'never'}"
+                      + (f", upstream through {rec['high_water'][:10]}"
+                         if rec.get("high_water") else ""))
+            elif rec.get("role") == "code":
+                print("    tracked for its version, never ingested")
+            else:
+                print(f"    {rec['files']} files, {rec['bytes'] / 1e6:.1f} MB, "
+                      f"last loaded {rec['last_ingest'] or 'never'}")
             if rec["by_status"]:
                 print("    " + "  ".join(f"{k}={v}" for k, v in
                                          sorted(rec["by_status"].items())))
@@ -670,8 +678,10 @@ def build_parser() -> argparse.ArgumentParser:
     as_.set_defaults(fn=cmd_ask)
 
     br = sub.add_parser("brief", help="produce a deliverable")
-    br.add_argument("kind", choices=["fiscal", "member", "matter"])
-    br.add_argument("subject", nargs="?")
+    br.add_argument("kind", choices=["fiscal", "member", "matter", "record"])
+    br.add_argument("subject", nargs="?",
+                    help="for `record`: a key such as matter:79313, "
+                         "funding:SC2027-…, org:EIN800193388, fy:2027")
     br.add_argument("--council", action="store_true", help="run the LLM Council")
     br.add_argument("--ask", help="the specific question to deliberate")
     br.add_argument("--json", action="store_true")

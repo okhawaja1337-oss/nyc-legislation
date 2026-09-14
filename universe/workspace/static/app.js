@@ -453,15 +453,32 @@ function renderResults(res) {
       ${vals.map(v => `<option value="${esc(v.value)}">${esc(v.value)} (${num(v.n)})</option>`).join('')}
     </select>`).join('')}</div>` : ''}
   <div class="tablewrap"><table><thead><tr><th>Kind</th><th>Record</th><th>FY</th>
-    <th>Who</th><th class="num">Amount</th></tr></thead><tbody>
+    <th>Who</th><th class="num">Amount</th><th></th></tr></thead><tbody>
     ${res.rows.map(r => `<tr><td><span class="tag">${esc(r.kind)}</span></td>
       <td><button class="linkish" data-record="${esc(r.key)}">${esc(r.title)}</button>
-      ${r.snip ? `<div class="small muted">${r.snip}</div>` : ''}</td>
+      ${r.snip ? `<div class="small muted">${r.snip}</div>` : ''}
+      ${r.citation && r.citation.inline
+        ? `<div class="small muted cite" data-cite="${esc(r.citation.inline)}"
+             title="Click to copy">${esc(r.citation.inline)}</div>` : ''}</td>
       <td>${r.fy || r.year || '—'}</td><td class="small">${esc(r.sponsor || r.org || '—')}</td>
-      <td class="num">${r.amount ? money(r.amount) : '—'}</td></tr>`).join('')
-      || '<tr><td colspan="5" class="muted">No matches.</td></tr>'}
-  </tbody></table></div>`;
+      <td class="num">${r.amount ? money(r.amount) : '—'}</td>
+      <td>${BRIEFABLE.has(String(r.key || '').split(':')[0])
+        ? `<button class="btn sm" data-act="brief-record"
+             data-key="${esc(r.key)}">Brief this</button>` : ''}</td></tr>`).join('')
+      || '<tr><td colspan="6" class="muted">No matches.</td></tr>'}
+  </tbody></table></div>
+  ${(res.bibliography || []).length ? `<div class="card">
+    <h3>Sources for these results</h3>
+    <ol class="small muted">${res.bibliography.map(b =>
+      `<li>${esc(b.replace(/^\[\d+\]\s*/, ''))}</li>`).join('')}</ol>
+    <p class="small muted">Every row above carries its own citation. Click one
+      to copy it.</p></div>` : ''}`;
 }
+
+/* Which record kinds the office can brief. Anything else shows no button
+   rather than a button that fails: a control that does nothing teaches people
+   to distrust the ones that work. */
+const BRIEFABLE = new Set(['matter', 'funding', 'org', 'ledger', 'fy']);
 
 VIEWS.assistant = async () => {
   const prompts = await api('/api/assistant/prompts');
@@ -676,6 +693,15 @@ function wire() {
   $$('[data-record]').forEach(el => el.onclick = e => {
     e.preventDefault(); openRecord(el.dataset.record);
   });
+  // A citation is only useful if it reaches the memo. One click copies it.
+  $$('[data-cite]').forEach(el => {
+    el.style.cursor = 'copy';
+    el.onclick = async () => {
+      try { await navigator.clipboard.writeText(el.dataset.cite);
+        toast('Citation copied'); }
+      catch (err) { toast('Select and copy — the browser blocked the clipboard'); }
+    };
+  });
   $$('[data-complete]').forEach(el => el.onchange = async () => {
     try { const r = await api('/api/task/complete',
         { id: el.dataset.complete, actor: state.me });
@@ -851,6 +877,12 @@ async function action(act, el) {
       return toast('Scanning the budget and the docket for changes…'); }
     if (act === 'week') { await api('/api/meetings/week', { days: state.params.days || 7 });
       return toast('Preparing every meeting in the window…'); }
+    if (act === 'brief-record') {
+      const key = el.dataset.key;
+      toast('Writing the brief…');
+      await api('/api/brief/run', { kind: 'record', subject: key });
+      return toast('Brief queued — it appears under Run a brief when done.');
+    }
     if (act === 'position-find') {
       const q = ($('#pos-q')?.value || '').trim();
       const box = $('#pos-hits');

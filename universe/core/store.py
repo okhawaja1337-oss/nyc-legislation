@@ -250,6 +250,34 @@ CREATE TABLE IF NOT EXISTS sources (
   notes         TEXT
 );
 
+-- What a bill actually says. The Council Record export carried each matter's
+-- truncated name and nothing else -- not the official summary, not the text --
+-- so the corpus could say that a bill existed and not what it did. These come
+-- from the Legistar mirror.
+--
+-- In the base schema rather than created on first ingest, because a lake that
+-- has never synced still has to answer "brief me this bill" without crashing,
+-- and a fresh install is exactly the state where that gets tried.
+CREATE TABLE IF NOT EXISTS matter_text (
+  matter_id     TEXT PRIMARY KEY,
+  file          TEXT,
+  title         TEXT,     -- the long legal title, not the short name
+  summary       TEXT,     -- the Council's own plain-language summary
+  body          TEXT,     -- the enacted or proposed text
+  intro_date    TEXT,
+  agenda_date   TEXT,
+  passed_date   TEXT,
+  enacted_date  TEXT,
+  version       TEXT,
+  attachments   TEXT,     -- JSON: name and link per attachment
+  history       TEXT,     -- JSON: the action trail
+  last_modified TEXT,
+  source_id     TEXT,
+  url           TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_matter_text_file ON matter_text(file);
+CREATE INDEX IF NOT EXISTS ix_matter_text_mod ON matter_text(last_modified);
+
 -- The office's own reconciliation work: the 56-sheet workbook that ties the
 -- district's real position out against the printed books, and the District 49
 -- full breakdown. Schedule C says who signed; this says where money landed.

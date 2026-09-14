@@ -245,12 +245,27 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/status":
             return self.send(self.status(s))
         if path == "/api/search":
-            return self.send(search.search_nl(
+            from ..core import reference as REF
+            got = search.search_nl(
                 s, a.get("q", ""),
                 limit=min(int(a.get("limit", 60)), 300),
                 offset=int(a.get("offset", 0)),
                 sort=a.get("sort", "relevance"),
-                with_facets=a.get("facets", "1") != "0"))
+                with_facets=a.get("facets", "1") != "0")
+            # Every result arrives quotable. A staffer who finds a bill and
+            # pastes its title into a memo has, until now, produced an
+            # assertion with no way back to the document -- not through
+            # carelessness, but because the system never offered the citation.
+            if got.get("rows"):
+                REF.for_results(s, got["rows"])
+                got["bibliography"] = REF.bibliography(s, got["rows"])
+            return self.send(got)
+        if path == "/api/cite":
+            from ..core import reference as REF
+            rec = search.record(s, a.get("key", ""))
+            if not rec:
+                return self.fail("No such record.", 404)
+            return self.send(REF.for_record(s, rec))
         if path == "/api/suggest":
             return self.send(search.suggest(s, a.get("q", "")))
         if path == "/api/record":
@@ -403,6 +418,13 @@ class Handler(BaseHTTPRequestHandler):
                  "placeholder": "2027",
                  "does": "Discretionary totals, channel split, the Transparency "
                          "Resolution ledger, citywide context."},
+                {"kind": "record",
+                 "label": "Anything you found in search",
+                 "subject_label": "The record",
+                 "placeholder": "matter:79313",
+                 "does": "A bill, a funding line, an organisation, a "
+                         "reconciliation row or a whole fiscal year. Press "
+                         "Brief this on any search result to fill this in."},
                 {"kind": "matter",
                  "label": "One bill or resolution",
                  "subject_label": "Legistar matter id",
@@ -622,6 +644,14 @@ class Handler(BaseHTTPRequestHandler):
             if kind == "matter" and not subject.isdigit():
                 return self.fail("A bill brief needs the numeric Legistar "
                                  "matter id, for example 77634.", 400)
+            if kind == "record":
+                from ..ai.anything import can_brief
+                if not can_brief(subject):
+                    return self.fail(
+                        f"Nothing knows how to brief {subject!r}. Briefs can "
+                        f"be written on a bill, a funding line, an "
+                        f"organisation, a reconciliation row or a fiscal year.",
+                        400)
             kw = {}
             if kind == "fiscal" and subject.isdigit():
                 kw["fy"] = int(subject)

@@ -71,19 +71,34 @@ def person_key(name: Any) -> str:
 
 # ------------------------------------------------------------- extractors --
 def _matters(store) -> Iterable[dict]:
+    # The summary and the text come from the Legistar mirror and are what
+    # make a bill findable by what it does rather than by the truncated line
+    # the export called its name. A search for "Legionnaires" should reach the
+    # bill that establishes the hotline; before the text was indexed, it could
+    # only reach bills with that word in the first 160 characters of a title.
     for r in store.q("""
-        SELECT m.*, mb.name AS prime_name
-        FROM matters m LEFT JOIN members mb ON mb.person_id = m.prime_id"""):
+        SELECT m.*, mb.name AS prime_name,
+               t.summary AS summary, t.body AS full_text,
+               t.intro_date AS intro_date, t.last_modified AS mirror_modified
+        FROM matters m
+        LEFT JOIN members mb ON mb.person_id = m.prime_id
+        LEFT JOIN matter_text t ON CAST(t.matter_id AS INTEGER) = m.matter_id"""):
         pillars = json.loads(r["pillars"] or "[]")
         topics = json.loads(r["topics"] or "[]")
+        file_no = r["file"] or ""
+        # Legistar pads the sequence to four digits and nobody types it that
+        # way, so the unpadded form is indexed alongside it.
+        bare = re.sub(r"\b0+(\d)", r"\1", file_no)
         yield {
             "key": f"matter:{r['matter_id']}", "kind": "matter",
             "entity_id": str(r["matter_id"]),
             "title": f"{r['file'] or ''} — {r['name'] or ''}".strip(" —"),
             "body": " ".join(filter(None, [
-                r["name"], r["file"], r["committee"], r["status"],
+                r["name"], file_no, bare if bare != file_no else "",
+                r["committee"], r["status"],
                 r["prime_name"], " ".join(str(t) for t in topics),
-                " ".join(_pillar_label(p) for p in pillars)])),
+                " ".join(_pillar_label(p) for p in pillars),
+                r["summary"] or "", (r["full_text"] or "")[:6000]]))[:24000],
             "year": r["year"], "fy": None, "status": r["status"],
             "committee": r["committee"], "sponsor": r["prime_name"],
             "sponsor_key": person_key(r["prime_name"]),

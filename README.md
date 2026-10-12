@@ -93,9 +93,10 @@ open the **⚙️ Data controls** panel, pick **All legislation + 2026**, and pr
 **Load data** — every tab comes alive from there.
 
 ### Deploy (Streamlit Community Cloud)
+**Full guide: [DEPLOY.md](DEPLOY.md)** — one-click deploy link, private-viewer setup, and the secrets template (`ANTHROPIC_API_KEY`, `NYS_API_KEY`, `CONGRESS_API_KEY`, `SOCRATA_APP_TOKEN`, `LLM_COUNCIL_URL`) so keys are set once for the whole office.
 1. Push this repo to GitHub.
 2. On [share.streamlit.io](https://share.streamlit.io), point a new app at `app.py`.
-3. (Optional) add API keys as app **Secrets** or enter them in-app.
+3. Add API keys in **Settings → Secrets**, and restrict viewers (the Whip Room is internal).
 
 ### Scheduled packets (headless)
 `scheduled_packet.py` generates a District Packet unattended — Markdown + printable HTML — so a member's packet can land in your inbox every Monday:

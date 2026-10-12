@@ -1221,6 +1221,19 @@ def _open_full_profile(who, key):
         st.success(f"Building **{who}**'s full profile — open **🏙️ City Hall → 🪪 Member Profile** to view it.")
 
 
+def _secret(name, default=""):
+    """Deployment secret: st.secrets (Streamlit Cloud) -> env var -> default.
+
+    Lets a hosted site hold keys centrally instead of staff typing them per
+    session; defensive because st.secrets raises when no secrets file exists."""
+    val = ""
+    try:
+        val = st.secrets.get(name, "") or ""
+    except Exception:
+        val = ""
+    return val or os.environ.get(name, "") or default
+
+
 def _open_law_wiki(file, key):
     """Route any bill selection to the unified Law Wiki (Legislation)."""
     if st.button("📖 Open Law Wiki →", key=key, use_container_width=True):
@@ -1433,7 +1446,8 @@ with st.expander("⚙️  Data controls — choose what to load, then press Load
                                help="Route prose analysis (law wiki, enforcement, briefings, influence, profiles) "
                                     "through multi-model council deliberation. Falls back to the single model if the "
                                     "council server is offline.")
-    council_url = cc2.text_input("Council server URL", st.session_state.get("council_url", "") or _council.DEFAULT_URL,
+    council_url = cc2.text_input("Council server URL",
+                                 st.session_state.get("council_url", "") or _secret("LLM_COUNCIL_URL") or _council.DEFAULT_URL,
                                  help="LLM Council Plus server (default http://localhost:8001).")
     st.session_state["use_council"] = use_council
     st.session_state["council_url"] = council_url.strip()
@@ -2335,7 +2349,7 @@ def _level_badge(level):
 
 def _get_llm(smart=False):
     """Build the shared LLM client from the key in the controls panel."""
-    key = (anthropic_key or "").strip() or os.environ.get("ANTHROPIC_API_KEY")
+    key = (anthropic_key or "").strip() or _secret("ANTHROPIC_API_KEY")
     model = _llm.SMART_MODEL if smart else _llm.FAST_MODEL
     return _llm.LLM(api_key=key, model=model,
                     use_council=st.session_state.get("use_council", False),
@@ -2544,11 +2558,11 @@ with t_gov:
                "criminal code. Track NY State bills and what NYC's congressional delegation is doing.")
     kc = st.columns(2)
     nys_key = kc[0].text_input("NY State Open Legislation API key",
-        st.session_state.get("nys_key", ""), type="password", key="nys_key_in",
-        help="Free at legislation.nysenate.gov/public/subscribe")
+        st.session_state.get("nys_key", "") or _secret("NYS_API_KEY"), type="password", key="nys_key_in",
+        help="Free at legislation.nysenate.gov/public/subscribe. On a deployed site, set NYS_API_KEY in secrets.")
     cong_key = kc[1].text_input("Congress.gov API key",
-        st.session_state.get("cong_key", ""), type="password", key="cong_key_in",
-        help="Free at api.congress.gov/sign-up")
+        st.session_state.get("cong_key", "") or _secret("CONGRESS_API_KEY"), type="password", key="cong_key_in",
+        help="Free at api.congress.gov/sign-up. On a deployed site, set CONGRESS_API_KEY in secrets.")
     st.session_state["nys_key"] = nys_key
     st.session_state["cong_key"] = cong_key
 
@@ -3014,7 +3028,8 @@ def _grounded_figures_panel(key_prefix):
         cats = st.multiselect("Categories", list(_od.CATEGORY_MATCH.keys()),
                               default=["Rape", "Sex crimes (other)"], key=f"{key_prefix}_cats")
         token = st.text_input("Socrata app token (optional — raises the rate limit)",
-                              st.session_state.get("socrata_token", ""), type="password",
+                              st.session_state.get("socrata_token", "") or _secret("SOCRATA_APP_TOKEN"),
+                              type="password",
                               key=f"{key_prefix}_token", help="Free at data.cityofnewyork.us (Developer Settings)")
         st.session_state["socrata_token"] = token
         if st.button("Fetch figures", key=f"{key_prefix}_fetch"):
